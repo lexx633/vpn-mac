@@ -26,6 +26,7 @@ import 'package:hiddify/features/proxy/active/active_proxy_notifier.dart';
 import 'package:hiddify/features/system_tray/notifier/system_tray_notifier.dart';
 import 'package:hiddify/features/window/notifier/window_notifier.dart';
 import 'package:hiddify/hiddifycore/hiddify_core_service_provider.dart';
+import 'package:hiddify/core/model/constants.dart';
 import 'package:hiddify/riverpod_observer.dart';
 import 'package:hiddify/utils/utils.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
@@ -85,6 +86,17 @@ Future<void> lazyBootstrap(WidgetsBinding widgetsBinding, Environment env) async
   Logger.bootstrap.info(appInfo.format());
 
   await _init("profile repository", () => container.read(profileRepositoryProvider.future));
+
+  // limm: add our subscription on first launch (non-blocking, 15s timeout)
+  await _safeInit("limm subscription", () async {
+    final prefs = container.read(sharedPreferencesProvider).requireValue;
+    if (prefs.getBool(Constants.limmFirstRunKey) != true) {
+      final repo = container.read(profileRepositoryProvider).requireValue;
+      await repo.upsertRemote(Constants.limmSubUrl).run();
+      await prefs.setBool(Constants.limmFirstRunKey, true);
+      Logger.bootstrap.info("limm: subscription added");
+    }
+  }, timeout: 15000);
 
   await _init("translations", () => container.read(translationsProvider.future));
 

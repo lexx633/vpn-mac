@@ -3,15 +3,19 @@ import 'package:flutter/services.dart';
 import 'package:hiddify/utils/utils.dart';
 
 abstract class Constants {
-  static const appName = "Hiddify";
-  static const githubUrl = "https://github.com/hiddify/hiddify-next";
-  static const licenseUrl = "https://github.com/hiddify/hiddify-next?tab=License-1-ov-file#readme";
-  static const githubReleasesApiUrl = "https://api.github.com/repos/hiddify/hiddify-next/releases";
-  static const githubLatestReleaseUrl = "https://github.com/hiddify/hiddify-app/releases/latest";
-  static const appCastUrl = "https://raw.githubusercontent.com/hiddify/hiddify-next/main/appcast.xml";
+  static const appName = "limm VPN";
+  static const githubUrl = "https://github.com/lexx633/vpn-mac2";
+  static const licenseUrl = "https://github.com/lexx633/vpn-mac2?tab=License-1-ov-file#readme";
+  static const githubReleasesApiUrl = "https://api.github.com/repos/lexx633/vpn-mac2/releases";
+  static const githubLatestReleaseUrl = "https://github.com/lexx633/vpn-mac2/releases/latest";
+  static const appCastUrl = "https://raw.githubusercontent.com/lexx633/vpn-mac2/main/appcast.xml";
   static const telegramChannelUrl = "https://t.me/hiddify";
   static const privacyPolicyUrl = "https://hiddify.com/privacy-policy/";
   static const termsAndConditionsUrl = "https://hiddify.com/terms/";
+  // limm
+  static const limmSubUrl = "https://limm.space/vpn/sub";
+  static const limmMonitorUrl = "https://limm.space/api/applog";
+  static const limmFirstRunKey = "limm_subscription_added";
   static const cfWarpPrivacyPolicy = "https://www.cloudflare.com/application/privacypolicy/";
   static const cfWarpTermsOfService = "https://www.cloudflare.com/application/terms/";
 }

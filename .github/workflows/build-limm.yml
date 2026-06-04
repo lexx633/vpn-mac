@@ -1,0 +1,103 @@
+name: Build limm VPN (macOS)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: build-limm-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: '3.38.5'
+  APP_NAME: limm-vpn-mac2
+
+jobs:
+  build-macos:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2.21.0
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Set version
+        run: |
+          BASE_VER=$(grep '^version:' pubspec.yaml | sed 's/version: *//; s/+.*//')
+          VERSION="${BASE_VER}.${{ github.run_number }}"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+          echo "Building version $VERSION (${{ github.sha }})"
+
+      - name: Install system deps
+        run: |
+          brew install create-dmg
+          make macos-install-deps
+          echo "$HOME/.pub-cache/bin" >> $GITHUB_PATH
+
+      - name: Prepare (download core)
+        run: make macos-prepare
+
+      - name: Build macOS app
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: flutter build macos --release --build-name=${{ env.VERSION }} --build-number=${{ github.run_number }}
+
+      - name: Ad-hoc codesign
+        run: |
+          APP_PATH="build/macos/Build/Products/Release/hiddify.app"
+          codesign --sign - --force --deep --verbose "$APP_PATH"
+          echo "Signed: $APP_PATH"
+
+      - name: Create DMG
+        run: |
+          APP_PATH="build/macos/Build/Products/Release/hiddify.app"
+          DMG_NAME="${{ env.APP_NAME }}.dmg"
+          create-dmg \
+            --volname "limm VPN" \
+            --window-size 600 328 \
+            --icon-size 100 \
+            --icon "hiddify.app" 160 190 \
+            --app-drop-link 440 190 \
+            --no-internet-enable \
+            "$DMG_NAME" \
+            "$APP_PATH"
+          echo "DMG_NAME=$DMG_NAME" >> $GITHUB_ENV
+          ls -lh "$DMG_NAME"
+
+      - name: Deploy to limm.space
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$DEPLOY_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          REMOTE_TMP="/var/www/limm/vpn/${{ env.APP_NAME }}_tmp.dmg"
+          REMOTE_FINAL="/var/www/limm/vpn/${{ env.APP_NAME }}.dmg"
+
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            "${{ env.DMG_NAME }}" \
+            "$DEPLOY_USER@$DEPLOY_HOST:$REMOTE_TMP"
+
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "mv -f $REMOTE_TMP $REMOTE_FINAL && chmod 644 $REMOTE_FINAL && echo 'Deployed ${{ env.VERSION }}'"
+
+          echo "Deployed: https://limm.space/vpn/${{ env.APP_NAME }}.dmg"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-${{ env.VERSION }}
+          path: ${{ env.DMG_NAME }}
+          retention-days: 7

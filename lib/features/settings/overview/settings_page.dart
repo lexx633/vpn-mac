@@ -184,6 +184,11 @@ class SettingsPage extends HookConsumerWidget {
                 },
               ),
             ),
+          SettingsSection(
+            title: "limm Diagnostic",
+            icon: Icons.network_check_rounded,
+            namedLocation: context.namedLocation('limmDiagnostic'),
+          ),
           if (Breakpoint(context).isMobile()) ...[
             SettingsSection(
               title: t.pages.logs.title,
