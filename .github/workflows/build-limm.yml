@@ -102,7 +102,10 @@ jobs:
 
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            "mv -f $REMOTE_TMP $REMOTE_FINAL && chmod 644 $REMOTE_FINAL && echo 'Deployed ${{ env.VERSION }}'"
+            "mv -f $REMOTE_TMP $REMOTE_FINAL && chmod 644 $REMOTE_FINAL && \
+             echo 'window.MAC_VER={\"ver\":\"${{ env.VERSION }}\",\"url\":\"/vpn/${{ env.APP_NAME }}.dmg\"};' \
+               > /var/www/limm/vpn/mac-version.js && chmod 644 /var/www/limm/vpn/mac-version.js && \
+             echo 'Deployed ${{ env.VERSION }}'"
 
           echo "Deployed: https://limm.space/vpn/${{ env.APP_NAME }}.dmg"
 
