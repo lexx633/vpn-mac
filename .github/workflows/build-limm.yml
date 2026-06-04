@@ -59,15 +59,30 @@ jobs:
         run: |
           APP_PATH="build/macos/Build/Products/Release/hiddify.app"
           DMG_NAME="${{ env.APP_NAME }}.dmg"
+
+          # Staging: app + quarantine removal script
+          mkdir -p dmg_staging
+          cp -R "$APP_PATH" dmg_staging/
+
+          cat > "dmg_staging/Снять карантин.command" << 'SCRIPT'
+#!/bin/bash
+sudo xattr -rd com.apple.quarantine /Applications/Hiddify.app
+echo ""
+echo "✓ Готово! Теперь запустите Hiddify.app"
+SCRIPT
+          chmod +x "dmg_staging/Снять карантин.command"
+
           create-dmg \
             --volname "limm VPN" \
-            --window-size 600 328 \
-            --icon-size 100 \
-            --icon "hiddify.app" 160 190 \
-            --app-drop-link 440 190 \
+            --window-size 660 400 \
+            --icon-size 90 \
+            --icon "hiddify.app" 150 180 \
+            --app-drop-link 510 180 \
+            --icon "Снять карантин.command" 330 310 \
             --no-internet-enable \
             "$DMG_NAME" \
-            "$APP_PATH"
+            dmg_staging/
+
           echo "DMG_NAME=$DMG_NAME" >> $GITHUB_ENV
           ls -lh "$DMG_NAME"
 
