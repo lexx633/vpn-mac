@@ -64,13 +64,9 @@ jobs:
           mkdir -p dmg_staging
           cp -R "$APP_PATH" dmg_staging/
 
-          cat > "dmg_staging/Снять карантин.command" << 'SCRIPT'
-#!/bin/bash
-sudo xattr -rd com.apple.quarantine /Applications/Hiddify.app
-echo ""
-echo "✓ Готово! Теперь запустите Hiddify.app"
-SCRIPT
-          chmod +x "dmg_staging/Снять карантин.command"
+          printf '#!/bin/bash\nsudo xattr -rd com.apple.quarantine /Applications/Hiddify.app\necho ""\necho "Done! You can now launch Hiddify.app"\n' \
+            > "dmg_staging/Fix Quarantine.command"
+          chmod +x "dmg_staging/Fix Quarantine.command"
 
           create-dmg \
             --volname "limm VPN" \
@@ -78,7 +74,7 @@ SCRIPT
             --icon-size 90 \
             --icon "hiddify.app" 150 180 \
             --app-drop-link 510 180 \
-            --icon "Снять карантин.command" 330 310 \
+            --icon "Fix Quarantine.command" 330 310 \
             --no-internet-enable \
             "$DMG_NAME" \
             dmg_staging/
