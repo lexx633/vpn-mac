@@ -174,7 +174,7 @@ class _LimmDiagnosticPageState extends State<LimmDiagnosticPage> {
         '--connect-timeout', '10',
         '-s', '-X', 'POST',
         '-H', 'Content-Type: application/json',
-        '-d', '{"client_uid":"$uid","kind":"macos","label":"mac2","platform":"macos-hiddify"}',
+        '-d', '{"client_uid":"$uid","kind":"windows","label":"pc","platform":"macos-hiddify"}',
         'https://limm.space/api/log',
       ]);
       if (r.exitCode == 0) {

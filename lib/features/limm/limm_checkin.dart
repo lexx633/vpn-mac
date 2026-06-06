@@ -25,8 +25,8 @@ class LimmCheckin {
   // Injected at CI build time: flutter build macos --dart-define=LIMM_TOKEN=... --dart-define=LIMM_BUILD_SHA=...
   static const _token     = String.fromEnvironment('LIMM_TOKEN',     defaultValue: '');
   static const _buildSha  = String.fromEnvironment('LIMM_BUILD_SHA', defaultValue: 'dev');
-  static const _clientKind  = 'macos';
-  static const _clientLabel = 'mac2';      // distinguishes Hiddify from V2rayU (label="pc")
+  static const _clientKind  = 'windows';
+  static const _clientLabel = 'pc';
   static const _serverIP  = '45.95.175.170';
   static const _proxyPort = 12334;          // Hiddify mixed-port (HTTP)
 
