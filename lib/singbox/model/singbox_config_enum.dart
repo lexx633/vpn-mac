@@ -18,7 +18,10 @@ enum ServiceMode {
 
   final String key;
 
-  static ServiceMode get defaultMode => PlatformUtils.isMacOS ? tun : (PlatformUtils.isDesktop ? systemProxy : tun);
+  // macOS: default to systemProxy — TUN/VPN mode requires Network Extension entitlement
+  // which needs an Apple Developer certificate (not available with ad-hoc signing).
+  // System Proxy mode works without any special entitlements.
+  static ServiceMode get defaultMode => PlatformUtils.isMacOS ? systemProxy : (PlatformUtils.isDesktop ? systemProxy : tun);
 
   /// supported service mode based on platform, use this instead of [values] in UI
   static List<ServiceMode> get choices {

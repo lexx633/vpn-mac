@@ -12,6 +12,8 @@ import 'package:hiddify/features/profile/model/profile_entity.dart';
 import 'package:hiddify/features/profile/notifier/active_profile_notifier.dart';
 import 'package:hiddify/hiddifycore/init_signal.dart';
 import 'package:hiddify/utils/utils.dart';
+import 'package:hiddify/features/settings/data/config_option_repository.dart';
+import 'package:hiddify/singbox/model/singbox_config_enum.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:in_app_review/in_app_review.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
@@ -135,7 +137,7 @@ class ConnectionNotifier extends _$ConnectionNotifier with AppLogger {
     );
   }
 
-  Future<void> _connectThrottled() async {
+  Future<void> _connectThrottled({bool _isRetry = false}) async {
     final activeProfile = await ref.read(activeProfileProvider.future);
     if (activeProfile == null) {
       loggy.info("no active profile, not connecting");
@@ -145,6 +147,24 @@ class ConnectionNotifier extends _$ConnectionNotifier with AppLogger {
       ConnectionFailure err,
     ) async {
       loggy.warning("error connecting", err);
+
+      // Auto-fallback: if TUN mode fails on macOS (operation not permitted / background core),
+      // automatically switch to System Proxy mode and retry once.
+      if (Platform.isMacOS && !_isRetry) {
+        final errStr = err.toString().toLowerCase();
+        if (errStr.contains("operation not permitted") ||
+            errStr.contains("background core") ||
+            errStr.contains("failed to start")) {
+          final currentMode = ref.read(ConfigOptions.serviceMode);
+          if (currentMode == ServiceMode.tun) {
+            loggy.warning("TUN failed on macOS (operation not permitted), auto-switching to System Proxy mode");
+            await ref.read(ConfigOptions.serviceMode.notifier).update(ServiceMode.systemProxy);
+            await _connectThrottled(_isRetry: true);
+            return;
+          }
+        }
+      }
+
       //Go err is not normal object to see the go errors are string and need to be dumped
       await ref
           .read(dialogNotifierProvider.notifier)
