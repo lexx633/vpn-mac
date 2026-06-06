@@ -60,10 +60,36 @@ class LimmCheckin {
 
   Future<String> get _uid => clientUid();
 
+  // ── VPN availability check ─────────────────────────────────────────────────
+
+  /// Returns true if Hiddify proxy is available (VPN on indicator).
+  /// Uses socket check first, then curl fallback.
+  Future<bool> vpnAvailable() async {
+    // 1. Socket check (fast)
+    try {
+      final sock = await Socket.connect('127.0.0.1', _proxyPort,
+          timeout: const Duration(seconds: 1));
+      sock.destroy();
+      return true;
+    } catch (_) {}
+    // 2. Curl fallback — try a request through proxy
+    try {
+      final r = await Process.run('/usr/bin/curl', [
+        '--max-time', '3', '--connect-timeout', '2',
+        '-s', '-o', '/dev/null',
+        '--proxy', 'http://127.0.0.1:$_proxyPort',
+        'http://1.1.1.1',
+      ]);
+      return r.exitCode == 0;
+    } catch (_) {
+      return false;
+    }
+  }
+
   // ── Main checkin ──────────────────────────────────────────────────────────
 
   /// Full checkin with L0-L4 probes.
-  /// [overrideVpnOn]: null = auto-detect via socket check, false = skip VPN probes.
+  /// [overrideVpnOn]: null = auto-detect via vpnAvailable(), false = skip VPN probes.
   Future<(int, String)> perform({bool? overrideVpnOn}) async {
     final uid = await _uid;
 
@@ -85,7 +111,7 @@ class LimmCheckin {
       latencyMs = l1samples.reduce((a, b) => a + b) ~/ l1samples.length;
     }
 
-    final vpnOn = overrideVpnOn ?? await _socksListening(_proxyPort);
+    final vpnOn = overrideVpnOn ?? await vpnAvailable();
 
     int l2 = 0, l3 = 0, l4 = 0;
     String egressIp = '';
@@ -170,6 +196,70 @@ class LimmCheckin {
     return _postCheckin(payload);
   }
 
+  /// Full post-test checkin with all measured data from Full Test.
+  /// Use this instead of performQuick to get proper ping values in dashboard.
+  Future<(int, String)> performPostTest({
+    required int l0,
+    required int l1,
+    required int l4,
+    String egressIp = '',
+    int? latencyMs,      // L1 direct RTT to VPN server
+    int? tunnelMs,       // latency through VPN tunnel
+    String tgStatus = 'down',
+    String gglStatus = 'down',
+    String chgptStatus = 'down',
+  }) async {
+    final uid = await _uid;
+    final payload = <String, dynamic>{
+      'client_uid':   uid,
+      'kind':         _clientKind,
+      'label':        _clientLabel,
+      'app_version':  _buildSha,
+      'l0_local_net': l0,
+      'l1_tcp443':    l1,
+      'l2_handshake': l4,   // if L4 passed, handshake must have worked
+      'l3_tunnel':    l4,
+      'l4_dest':      l4,
+      'vpn_running':  1,    // VPN IS running (we verified socket before calling this)
+      'raw': {
+        'egress_ip':     egressIp,
+        'dest_google':   gglStatus,
+        'dest_telegram': tgStatus,
+        'services': {'tg': tgStatus, 'ggl': gglStatus, 'chgpt': chgptStatus},
+      },
+    };
+    if (latencyMs != null && latencyMs > 0) payload['latency_ms'] = latencyMs;
+    if (tunnelMs != null) payload['tunnel_ms'] = tunnelMs;
+    return _postCheckin(payload);
+  }
+
+  /// POST per-profile Full Test results to /api/fulltest for dashboard Profiles column.
+  Future<void> postFulltestResult({
+    required String profileName,
+    required bool ok,
+    int? latencyMs,
+  }) async {
+    if (_token.isEmpty) return;
+    final uid = await _uid;
+    final profile = <String, dynamic>{'name': profileName, 'ok': ok ? 1 : 0};
+    if (latencyMs != null && latencyMs > 0) profile['latency_ms'] = latencyMs;
+    try {
+      final client = HttpClient()
+        ..connectionTimeout = const Duration(seconds: 10);
+      final req = await client.postUrl(Uri.parse('$_apiBase/fulltest'));
+      req.headers
+        ..contentType = ContentType.json
+        ..add('Authorization', 'Bearer $_token');
+      req.write(jsonEncode({
+        'client_uid': uid,
+        'kind': _clientKind,
+        'profiles': [profile],
+      }));
+      await req.close();
+      client.close();
+    } catch (_) {}
+  }
+
   // ── Probes ────────────────────────────────────────────────────────────────
 
   /// Direct TCP probe, bypassing TUN via --noproxy '*'.
@@ -183,18 +273,6 @@ class LimmCheckin {
         url,
       ]);
       return r.exitCode == 0 || r.exitCode == 52 || r.exitCode == 35 || r.exitCode == 56;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  /// Check if Hiddify mixed-port is listening (VPN on indicator).
-  Future<bool> _socksListening(int port) async {
-    try {
-      final sock = await Socket.connect('127.0.0.1', port,
-          timeout: const Duration(seconds: 1));
-      sock.destroy();
-      return true;
     } catch (_) {
       return false;
     }
