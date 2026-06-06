@@ -40,6 +40,9 @@ class _LimmDiagnosticPageState extends State<LimmDiagnosticPage> {
   static const _proxyPort = 12334;
   static const _serverIP  = '45.95.175.170';
 
+  /// curl executable: absolute path on macOS/Linux, via PATH on Windows.
+  static String get _curl => Platform.isWindows ? 'curl' : _curl;
+
   // ── Logging ───────────────────────────────────────────────────────────────
 
   void _append(String line) {
@@ -233,7 +236,12 @@ class _LimmDiagnosticPageState extends State<LimmDiagnosticPage> {
       }
     });
 
-    final (code, msg) = await LimmCheckin.shared.perform();
+    // Use performQuick: instant POST (<2s) if VPN available, no heavy curl probes.
+    // Full perform() takes 30-75s and always hit the 30s timeout.
+    final vpnOn = await LimmCheckin.shared.vpnAvailable();
+    final (code, msg) = vpnOn
+        ? await LimmCheckin.shared.performQuick()
+        : await LimmCheckin.shared.perform(overrideVpnOn: false);
     if (!done && mounted) {
       done = true;
       _countdownTimer?.cancel();
@@ -251,7 +259,7 @@ class _LimmDiagnosticPageState extends State<LimmDiagnosticPage> {
   /// Direct curl bypassing TUN via --noproxy '*'.
   Future<bool> _curlDirect(String url, {int timeout = 5}) async {
     try {
-      final r = await Process.run('/usr/bin/curl', [
+      final r = await Process.run(_curl, [
         '--max-time',      '$timeout',
         '--connect-timeout', '${(timeout - 1).clamp(1, timeout)}',
         '-s', '-o', '/dev/null',
@@ -267,7 +275,7 @@ class _LimmDiagnosticPageState extends State<LimmDiagnosticPage> {
   /// HTTP request through Hiddify HTTP proxy.
   Future<String?> _curlProxy(String url, {int timeout = 15}) async {
     try {
-      final r = await Process.run('/usr/bin/curl', [
+      final r = await Process.run(_curl, [
         '--max-time',        '$timeout',
         '--connect-timeout', '${(timeout - 2).clamp(2, timeout)}',
         '-s',
@@ -284,7 +292,7 @@ class _LimmDiagnosticPageState extends State<LimmDiagnosticPage> {
   /// HTTP status probe through proxy. Returns "ok" / "blocked" / "down".
   Future<String> _probeService(String url) async {
     try {
-      final r = await Process.run('/usr/bin/curl', [
+      final r = await Process.run(_curl, [
         '--max-time',        '12',
         '--connect-timeout', '10',
         '-s', '-o', '/dev/null', '-w', '%{http_code}',
@@ -303,7 +311,7 @@ class _LimmDiagnosticPageState extends State<LimmDiagnosticPage> {
   Future<(bool, String)> _sendLog() async {
     try {
       final uid = await LimmCheckin.shared.clientUid();
-      final r = await Process.run('/usr/bin/curl', [
+      final r = await Process.run(_curl, [
         '--max-time', '20',
         '--connect-timeout', '10',
         '-s', '-X', 'POST',

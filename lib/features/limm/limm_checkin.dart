@@ -30,6 +30,10 @@ class LimmCheckin {
   static const _serverIP  = '45.95.175.170';
   static const _proxyPort = 12334;          // Hiddify mixed-port (HTTP)
 
+  /// curl executable: on Windows it lives in System32 and is found via PATH;
+  /// on macOS/Linux use the absolute path (sandboxed apps may have a minimal PATH).
+  static String get _curl => Platform.isWindows ? 'curl' : _curl;
+
   // ── Lifecycle ──────────────────────────────────────────────────────────────
 
   void start() {
@@ -74,7 +78,7 @@ class LimmCheckin {
     } catch (_) {}
     // 2. Curl fallback — try a request through proxy
     try {
-      final r = await Process.run('/usr/bin/curl', [
+      final r = await Process.run(_curl, [
         '--max-time', '3', '--connect-timeout', '2',
         '-s', '-o', '/dev/null',
         '--proxy', 'http://127.0.0.1:$_proxyPort',
@@ -265,7 +269,7 @@ class LimmCheckin {
   /// Direct TCP probe, bypassing TUN via --noproxy '*'.
   Future<bool> _curlDirect(String url, {int timeout = 6}) async {
     try {
-      final r = await Process.run('/usr/bin/curl', [
+      final r = await Process.run(_curl, [
         '--max-time',      '$timeout',
         '--connect-timeout', '${(timeout - 1).clamp(1, timeout)}',
         '-s', '-o', '/dev/null',
@@ -282,7 +286,7 @@ class LimmCheckin {
   Future<String?> _curlProxy(String url,
       {required int port, int timeout = 10}) async {
     try {
-      final r = await Process.run('/usr/bin/curl', [
+      final r = await Process.run(_curl, [
         '--max-time',      '$timeout',
         '--connect-timeout', '${(timeout - 2).clamp(2, timeout)}',
         '-s',
@@ -299,7 +303,7 @@ class LimmCheckin {
   /// HTTP status probe through proxy. Returns "ok" / "blocked" / "down".
   Future<String> _probeService(String url, {required int port}) async {
     try {
-      final r = await Process.run('/usr/bin/curl', [
+      final r = await Process.run(_curl, [
         '--max-time',      '12',
         '--connect-timeout', '10',
         '-s', '-o', '/dev/null', '-w', '%{http_code}',
