@@ -47,7 +47,12 @@ jobs:
       - name: Build macOS app
         env:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
-        run: flutter build macos --release --build-name=${{ env.VERSION }} --build-number=${{ github.run_number }}
+        run: |
+          flutter build macos --release \
+            --build-name=${{ env.VERSION }} \
+            --build-number=${{ github.run_number }} \
+            --dart-define=LIMM_TOKEN=${{ secrets.LIMM_TOKEN }} \
+            --dart-define=LIMM_BUILD_SHA=${{ env.SHORT_SHA }}
 
       - name: Ad-hoc codesign
         run: |

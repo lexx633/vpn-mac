@@ -27,6 +27,7 @@ import 'package:hiddify/features/system_tray/notifier/system_tray_notifier.dart'
 import 'package:hiddify/features/window/notifier/window_notifier.dart';
 import 'package:hiddify/hiddifycore/hiddify_core_service_provider.dart';
 import 'package:hiddify/core/model/constants.dart';
+import 'package:hiddify/features/limm/limm_checkin.dart';
 import 'package:hiddify/riverpod_observer.dart';
 import 'package:hiddify/utils/utils.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
@@ -97,6 +98,10 @@ Future<void> lazyBootstrap(WidgetsBinding widgetsBinding, Environment env) async
       Logger.bootstrap.info("limm: subscription added");
     }
   }, timeout: 15000);
+
+  // limm: start periodic checkin (every 15 min) — non-blocking
+  LimmCheckin.shared.start();
+  Logger.bootstrap.info("limm: checkin timer started");
 
   await _init("translations", () => container.read(translationsProvider.future));
 
