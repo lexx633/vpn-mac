@@ -20,15 +20,17 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:hiddify/features/limm/limm_checkin.dart';
+import 'package:hiddify/features/profile/notifier/active_profile_notifier.dart';
+import 'package:hooks_riverpod/hooks_riverpod.dart';
 
-class LimmDiagnosticPage extends StatefulWidget {
+class LimmDiagnosticPage extends ConsumerStatefulWidget {
   const LimmDiagnosticPage({super.key});
 
   @override
-  State<LimmDiagnosticPage> createState() => _LimmDiagnosticPageState();
+  ConsumerState<LimmDiagnosticPage> createState() => _LimmDiagnosticPageState();
 }
 
-class _LimmDiagnosticPageState extends State<LimmDiagnosticPage> {
+class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
   final _log = StringBuffer();
   final _scrollCtrl = ScrollController();
   bool _testRunning = false;
@@ -155,28 +157,55 @@ class _LimmDiagnosticPageState extends State<LimmDiagnosticPage> {
 
       // Step 5: POST /api/fulltest with profile result
       await LimmCheckin.shared.postFulltestResult(
-        profileName: 'текущий',
+        profileName: _activeProfileName(),
         ok: l4 == 1,
         latencyMs: tunnelMs,
       );
     } else {
-      // Profile didn't work — still send correct VPN-on state if socket listening
+      // Egress IP check failed — probe tunnel latency + services if proxy is up
       final vpnOn = await LimmCheckin.shared.vpnAvailable();
+      int? tunnelMsFailed;
+      String tgF = 'down', gglF = 'down', chgptF = 'down';
       if (vpnOn) {
-        _append('\n⏳ Чекин (VPN on, профиль не прошёл)…');
-        final (cN, _) = await LimmCheckin.shared.performPostTest(
+        // Tunnel latency even though egress IP is wrong/missing
+        final tTun = DateTime.now();
+        final tOk = await _curlProxy('https://www.gstatic.com/generate_204', timeout: 8);
+        if (tOk != null) {
+          tunnelMsFailed = DateTime.now().difference(tTun).inMilliseconds;
+          _append('⏳ Пинг туннель (при сбое egress)  ${tunnelMsFailed}ms');
+        }
+        // Services
+        final svcResults = await Future.wait([
+          _probeService('https://web.telegram.org/'),
+          _probeService('https://www.google.com/search?q=test'),
+          _probeService('https://chatgpt.com/'),
+        ]);
+        tgF = svcResults[0]; gglF = svcResults[1]; chgptF = svcResults[2];
+        _append('Сервисы: Telegram=$tgF  Google=$gglF  ChatGPT=$chgptF');
+      }
+
+      // Post checkin: vpn_running=1 (proxy up) or vpn_running=0 (proxy down)
+      _append('\n⏳ Чекин (результат теста)…');
+      final int cN; final String mN;
+      if (vpnOn) {
+        (cN, mN) = await LimmCheckin.shared.performPostTest(
           l0: 1, l1: l1, l4: 0,
           latencyMs: latencyMs > 0 ? latencyMs : null,
+          tunnelMs: tunnelMsFailed,
+          tgStatus: tgF, gglStatus: gglF, chgptStatus: chgptF,
         );
-        _append(cN == 200
-            ? '✓ Чекин (VPN on, l4=0)  (ok $cN)'
-            : '✗ Чекин (VPN on, l4=0)  (fail $cN)');
-
-        await LimmCheckin.shared.postFulltestResult(
-          profileName: 'текущий',
-          ok: false,
-        );
+      } else {
+        (cN, mN) = await LimmCheckin.shared.perform(overrideVpnOn: false);
       }
+      _append(cN == 200
+          ? '✓ Чекин отправлен  (ok $cN)'
+          : '✗ Чекин  (fail $cN  $mN)');
+
+      // Always post fulltest result so Profiles column is updated
+      await LimmCheckin.shared.postFulltestResult(
+        profileName: _activeProfileName(),
+        ok: false,
+      );
     }
 
     // Step 6: send diagnostic log
@@ -345,6 +374,15 @@ class _LimmDiagnosticPageState extends State<LimmDiagnosticPage> {
   Future<(bool, String)> _sendLog() async {
     final (code, body) = await LimmCheckin.shared.sendLog();
     return (code == 200, '$code $body');
+  }
+
+  /// Returns the active Hiddify profile name (subscription name), or 'текущий' fallback.
+  String _activeProfileName() {
+    try {
+      final profile = ref.read(activeProfileProvider).valueOrNull;
+      if (profile != null && profile.name.isNotEmpty) return profile.name;
+    } catch (_) {}
+    return 'текущий';
   }
 
   String _ts() {
