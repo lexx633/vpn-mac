@@ -309,23 +309,8 @@ class _LimmDiagnosticPageState extends State<LimmDiagnosticPage> {
   }
 
   Future<(bool, String)> _sendLog() async {
-    try {
-      final uid = await LimmCheckin.shared.clientUid();
-      final r = await Process.run(_curl, [
-        '--max-time', '20',
-        '--connect-timeout', '10',
-        '-s', '-X', 'POST',
-        '-H', 'Content-Type: application/json',
-        '-d', '{"client_uid":"$uid","kind":"windows","label":"pc","platform":"macos-hiddify"}',
-        'https://limm.space/api/log',
-      ]);
-      if (r.exitCode == 0) {
-        return (true, '200 ${r.stdout.toString().trim()}');
-      }
-      return (false, 'curl exit ${r.exitCode}');
-    } catch (e) {
-      return (false, e.toString());
-    }
+    final (code, body) = await LimmCheckin.shared.sendLog();
+    return (code == 200, '$code $body');
   }
 
   String _ts() {
