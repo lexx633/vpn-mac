@@ -13,6 +13,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class LimmCheckin {
@@ -257,24 +258,54 @@ class LimmCheckin {
     return _postCheckin(payload);
   }
 
-  /// Send a minimal diagnostic log entry to /api/applog with proper auth.
+  /// Read last [maxLines] lines from a log file in the app support directory.
+  /// Returns empty string if file doesn't exist or on any error.
+  Future<String> _readLogTail(String filename, {int maxLines = 150}) async {
+    try {
+      final dir = await getApplicationSupportDirectory();
+      final file = File('${dir.path}/$filename');
+      if (!await file.exists()) return '';
+      final lines = await file.readAsLines();
+      if (lines.isEmpty) return '';
+      final tail = lines.length > maxLines
+          ? lines.sublist(lines.length - maxLines)
+          : lines;
+      return tail.join('\n');
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /// Send diagnostic log bundle to /api/applog.
+  /// Includes last 150 lines of box.log (sing-box core) and app.log (Hiddify app).
   Future<(int, String)> sendLog() async {
     if (_token.isEmpty) return (0, 'no token');
     final uid = await _uid;
     try {
+      // Read sing-box core log and Hiddify app log in parallel
+      final results = await Future.wait([
+        _readLogTail('box.log', maxLines: 150),
+        _readLogTail('app.log', maxLines: 150),
+      ]);
+      final boxLog = results[0];
+      final appLog = results[1];
+
       final client = HttpClient()
-        ..connectionTimeout = const Duration(seconds: 15);
+        ..connectionTimeout = const Duration(seconds: 20);
       final req = await client.postUrl(Uri.parse('$_apiBase/applog'));
       req.headers
         ..contentType = ContentType.json
         ..add('Authorization', 'Bearer $_token');
-      req.write(jsonEncode({
+      final payload = <String, dynamic>{
         'client_uid':  uid,
         'kind':        _clientKind,
         'label':       _clientLabel,
         'app_version': await _appVersion(),
         'ts':          DateTime.now().millisecondsSinceEpoch ~/ 1000,
-      }));
+        if (boxLog.isNotEmpty) 'box_log': boxLog,
+        if (appLog.isNotEmpty) 'app_log': appLog,
+      };
+      req.write(jsonEncode(payload));
       final resp = await req.close();
       final body = await resp.transform(utf8.decoder).join();
       client.close();
