@@ -25,14 +25,15 @@ class LimmCheckin {
   // Injected at CI build time: flutter build macos --dart-define=LIMM_TOKEN=... --dart-define=LIMM_BUILD_SHA=...
   static const _token     = String.fromEnvironment('LIMM_TOKEN',     defaultValue: '');
   static const _buildSha  = String.fromEnvironment('LIMM_BUILD_SHA', defaultValue: 'dev');
-  static const _clientKind  = 'windows';
+  static const _clientKind  = 'macos';
   static const _clientLabel = 'pc';
-  static const _serverIP  = '45.95.175.170';
-  static const _proxyPort = 12334;          // Hiddify mixed-port (HTTP)
+  static const _serverIP   = '45.95.175.170';
+  static const _serverPort = 443;            // VPN server port for L1 TCP probe
+  static const _proxyPort  = 12334;          // Hiddify mixed-port (HTTP)
 
   /// curl executable: on Windows it lives in System32 and is found via PATH;
   /// on macOS/Linux use the absolute path (sandboxed apps may have a minimal PATH).
-  static String get _curl => Platform.isWindows ? 'curl' : _curl;
+  static String get _curl => Platform.isWindows ? 'curl' : '/usr/bin/curl';
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -106,7 +107,7 @@ class LimmCheckin {
     final l1samples = <int>[];
     for (var i = 0; i < 3; i++) {
       final t = DateTime.now();
-      if (await _curlDirect('http://$_serverIP:$_proxyPort', timeout: 5)) {
+      if (await _curlDirect('https://$_serverIP:$_serverPort', timeout: 5)) {
         l1 = 1;
         l1samples.add(DateTime.now().difference(t).inMilliseconds);
       }
