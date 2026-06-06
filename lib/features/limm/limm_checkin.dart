@@ -25,7 +25,7 @@ class LimmCheckin {
   // Injected at CI build time: flutter build macos --dart-define=LIMM_TOKEN=... --dart-define=LIMM_BUILD_SHA=...
   static const _token     = String.fromEnvironment('LIMM_TOKEN',     defaultValue: '');
   static const _buildSha  = String.fromEnvironment('LIMM_BUILD_SHA', defaultValue: 'dev');
-  static const _clientKind  = 'macos';
+  static const _clientKind  = 'macos-hiddify';
   static const _clientLabel = 'pc';
   static const _serverIP   = '45.95.175.170';
   static const _serverPort = 443;            // VPN server port for L1 TCP probe
@@ -159,7 +159,7 @@ class LimmCheckin {
       'client_uid':   uid,
       'kind':         _clientKind,
       'label':        _clientLabel,
-      'app_version':  _buildSha,
+      'app_version':  'hiddify+$_buildSha',
       'l0_local_net': l0,
       'l1_tcp443':    l1,
       'l2_handshake': l2,
@@ -187,7 +187,7 @@ class LimmCheckin {
       'client_uid':   uid,
       'kind':         _clientKind,
       'label':        _clientLabel,
-      'app_version':  _buildSha,
+      'app_version':  'hiddify+$_buildSha',
       'l0_local_net': 1, 'l1_tcp443': 1, 'l2_handshake': 1, 'l3_tunnel': 1, 'l4_dest': 1,
       'vpn_running':  1,
       'raw': {
@@ -219,7 +219,7 @@ class LimmCheckin {
       'client_uid':   uid,
       'kind':         _clientKind,
       'label':        _clientLabel,
-      'app_version':  _buildSha,
+      'app_version':  'hiddify+$_buildSha',
       'l0_local_net': l0,
       'l1_tcp443':    l1,
       'l2_handshake': l4,   // if L4 passed, handshake must have worked
