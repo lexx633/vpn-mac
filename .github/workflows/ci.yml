@@ -1,23 +1,8 @@
 name: CI
+# Disabled in limm fork — upstream workflow requires Apple/Android/Windows
+# signing secrets not available in this fork. Use 'Build limm VPN' instead.
 on:
-  pull_request:
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'test.configs/**'
-      - '.vscode/'
-      - 'appcast.xml'
-  push:
-    branches:
-       - main
-       - dev
-       - android-fix-action-bug
-       - new-design-v2 
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - '.vscode/'
-      - 'appcast.xml'
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
