@@ -117,16 +117,13 @@ class LimmCheckin {
     // L0: direct internet (bypasses TUN via --noproxy '*')
     final l0 = await _curlDirect('http://1.1.1.1', timeout: 5) ? 1 : 0;
 
-    // L1: direct TCP RTT to VPN server (3 probes, avg; bypasses TUN)
+    // L1: direct TCP RTT to VPN server (3 probes, avg; bypasses HTTP proxy and TUN)
     int l1 = 0;
     int latencyMs = 0;
     final l1samples = <int>[];
     for (var i = 0; i < 3; i++) {
-      final t = DateTime.now();
-      if (await _curlDirect('https://$_serverIP:$_serverPort', timeout: 5)) {
-        l1 = 1;
-        l1samples.add(DateTime.now().difference(t).inMilliseconds);
-      }
+      final ms = await _tcpPing(_serverIP, _serverPort);
+      if (ms != null) { l1 = 1; l1samples.add(ms); }
     }
     if (l1samples.isNotEmpty) {
       latencyMs = l1samples.reduce((a, b) => a + b) ~/ l1samples.length;
@@ -154,11 +151,17 @@ class LimmCheckin {
         l4 = egressIp == _serverIP ? 1 : 0;
       }
 
-      // Tunnel latency (gstatic generate_204 through proxy)
-      final tStart = DateTime.now();
-      final tOk = await _curlProxy('https://www.gstatic.com/generate_204',
-          port: _proxyPort, timeout: 5);
-      if (tOk != null) tunnelMs = DateTime.now().difference(tStart).inMilliseconds;
+      // Tunnel latency (gstatic generate_204 through proxy, 3 probes avg)
+      final tunSamples = <int>[];
+      for (var i = 0; i < 3; i++) {
+        final tStart = DateTime.now();
+        final tOk = await _curlProxy('https://www.gstatic.com/generate_204',
+            port: _proxyPort, timeout: 5);
+        if (tOk != null) tunSamples.add(DateTime.now().difference(tStart).inMilliseconds);
+      }
+      if (tunSamples.isNotEmpty) {
+        tunnelMs = tunSamples.reduce((a, b) => a + b) ~/ tunSamples.length;
+      }
 
       // Services (parallel)
       final svcResults = await Future.wait([
@@ -310,7 +313,22 @@ class LimmCheckin {
 
   // ── Probes ────────────────────────────────────────────────────────────────
 
-  /// Direct TCP probe, bypassing TUN via --noproxy '*'.
+  /// Pure TCP connect RTT to VPN server — bypasses HTTP proxy and TUN alike.
+  /// Returns elapsed ms on first accepted connection, null on timeout/error.
+  Future<int?> _tcpPing(String host, int port, {int timeoutSec = 5}) async {
+    try {
+      final t0 = DateTime.now();
+      final sock = await Socket.connect(host, port,
+          timeout: Duration(seconds: timeoutSec));
+      final ms = DateTime.now().difference(t0).inMilliseconds;
+      sock.destroy();
+      return ms;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Direct HTTP probe, bypassing TUN via --noproxy '*'.
   Future<bool> _curlDirect(String url, {int timeout = 6}) async {
     try {
       final r = await Process.run(_curl, [

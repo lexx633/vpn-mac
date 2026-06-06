@@ -76,21 +76,20 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
         ? '✓ Чекин (без VPN)  (ok $c1)  [${ms1}ms]'
         : '✗ Чекин (без VPN)  (fail $c1 $m1)  [${ms1}ms]');
 
-    // Step 2: measure L1 RTT — direct TCP to VPN server (3 probes, bypasses TUN)
-    _append('\n⏳ Пинг L1 (прямой, до VPN-сервера)…');
+    // Step 2: measure L1 RTT — direct TCP to VPN server (3 probes avg, bypasses proxy/TUN)
+    _append('\n⏳ Пинг прямой (TCP до VPN-сервера, 3 пробы)…');
     final l1samples = <int>[];
     for (var i = 0; i < 3; i++) {
-      final t = DateTime.now();
-      final ok = await _curlDirect('https://$_serverIP:$_serverPort', timeout: 5);
-      if (ok) l1samples.add(DateTime.now().difference(t).inMilliseconds);
+      final ms = await _tcpPing(_serverIP, _serverPort);
+      if (ms != null) l1samples.add(ms);
     }
     final l1 = l1samples.isNotEmpty ? 1 : 0;
     final latencyMs = l1samples.isNotEmpty
         ? l1samples.reduce((a, b) => a + b) ~/ l1samples.length
         : 0;
     _append(l1 == 1
-        ? '✓ Пинг L1  ${latencyMs}ms (среднее из ${l1samples.length} проб)'
-        : '✗ Пинг L1  недоступен (ISP блок или сервер упал)');
+        ? '✓ Пинг прямой  ${latencyMs}ms  (среднее ${l1samples.length}/3 проб)'
+        : '✗ Пинг прямой  недоступен (ISP блок или сервер упал)');
 
     // Step 3: test current profile through proxy
     _append('\n── Текущий профиль ──\n');
@@ -111,15 +110,19 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
       _append('✗ Egress IP  (нет ответа)  [${ms3a}ms]');
     }
 
-    // 3b: tunnel latency (gstatic generate_204 through proxy)
+    // 3b: tunnel latency (gstatic generate_204 through proxy, 3 probes avg)
     int? tunnelMs;
     if (egressIp.isNotEmpty) {
-      _append('⏳ Пинг туннель (gstatic)…');
-      final tTun = DateTime.now();
-      final tOk = await _curlProxy('https://www.gstatic.com/generate_204', timeout: 8);
-      if (tOk != null) {
-        tunnelMs = DateTime.now().difference(tTun).inMilliseconds;
-        _append('✓ Пинг туннель  ${tunnelMs}ms');
+      _append('⏳ Пинг туннель (gstatic, 3 пробы)…');
+      final tunSamples = <int>[];
+      for (var i = 0; i < 3; i++) {
+        final tTun = DateTime.now();
+        final tOk = await _curlProxy('https://www.gstatic.com/generate_204', timeout: 8);
+        if (tOk != null) tunSamples.add(DateTime.now().difference(tTun).inMilliseconds);
+      }
+      if (tunSamples.isNotEmpty) {
+        tunnelMs = tunSamples.reduce((a, b) => a + b) ~/ tunSamples.length;
+        _append('✓ Пинг туннель  ${tunnelMs}ms  (среднее ${tunSamples.length}/3 проб)');
       } else {
         _append('✗ Пинг туннель  (нет ответа)');
       }
@@ -269,25 +272,32 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
       }
     });
 
-    // Step 1: L1 direct RTT to VPN server (3 probes, bypasses TUN via --noproxy)
+    // Step 1: L1 direct TCP RTT to VPN server (3 probes avg, bypasses proxy and TUN)
     final l1samples = <int>[];
     for (var i = 0; i < 3; i++) {
-      final t = DateTime.now();
-      final ok = await _curlDirect('https://$_serverIP:$_serverPort', timeout: 5);
-      if (ok) l1samples.add(DateTime.now().difference(t).inMilliseconds);
+      final ms = await _tcpPing(_serverIP, _serverPort);
+      if (ms != null) l1samples.add(ms);
     }
     final l1 = l1samples.isNotEmpty ? 1 : 0;
     final latencyMs = l1samples.isNotEmpty
         ? l1samples.reduce((a, b) => a + b) ~/ l1samples.length
         : 0;
 
-    // Step 2: check VPN + measure tunnel latency
+    // Step 2: check VPN + measure tunnel latency (3 probes avg)
     final vpnOn = await LimmCheckin.shared.vpnAvailable();
     int? tunnelMs;
+    int tunCount = 0;
     if (vpnOn) {
-      final tStart = DateTime.now();
-      final tOk = await _curlProxy('https://www.gstatic.com/generate_204', timeout: 8);
-      if (tOk != null) tunnelMs = DateTime.now().difference(tStart).inMilliseconds;
+      final tunSamples = <int>[];
+      for (var i = 0; i < 3; i++) {
+        final tStart = DateTime.now();
+        final tOk = await _curlProxy('https://www.gstatic.com/generate_204', timeout: 8);
+        if (tOk != null) tunSamples.add(DateTime.now().difference(tStart).inMilliseconds);
+      }
+      tunCount = tunSamples.length;
+      if (tunSamples.isNotEmpty) {
+        tunnelMs = tunSamples.reduce((a, b) => a + b) ~/ tunSamples.length;
+      }
     }
 
     // Step 3: POST checkin with real latency data
@@ -307,8 +317,9 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
       _countdownTimer?.cancel();
       setState(() { _checkinRunning = false; _checkinSecondsLeft = 0; });
       final pingInfo = latencyMs > 0
-          ? 'L1 ${latencyMs}ms${tunnelMs != null ? " · vpn ${tunnelMs}ms" : ""}'
-          : 'L1 недоступен';
+          ? 'Прямой  ${latencyMs}ms  (среднее ${l1samples.length}/3)\n'
+            'Туннель  ${tunnelMs != null ? "${tunnelMs}ms  (среднее $tunCount/3)" : "нет данных"}'
+          : 'Прямой  недоступен';
       if (code == 200) {
         _showAlert('✅ Checkin sent', '$pingInfo\nStatus updated on limm.space/stat');
       } else {
@@ -318,6 +329,21 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
+
+  /// Pure TCP connect RTT — bypasses HTTP proxy and TUN alike.
+  /// Returns elapsed ms on connection, null on error/timeout.
+  Future<int?> _tcpPing(String host, int port, {int timeoutSec = 5}) async {
+    try {
+      final t0 = DateTime.now();
+      final sock = await Socket.connect(host, port,
+          timeout: Duration(seconds: timeoutSec));
+      final ms = DateTime.now().difference(t0).inMilliseconds;
+      sock.destroy();
+      return ms;
+    } catch (_) {
+      return null;
+    }
+  }
 
   /// Direct curl bypassing TUN via --noproxy '*'.
   Future<bool> _curlDirect(String url, {int timeout = 5}) async {
