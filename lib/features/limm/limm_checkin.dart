@@ -28,7 +28,7 @@ class LimmCheckin {
   static const _token     = String.fromEnvironment('LIMM_TOKEN',     defaultValue: '');
   static const _buildSha  = String.fromEnvironment('LIMM_BUILD_SHA', defaultValue: 'dev');
   static String get _clientKind => Platform.isMacOS ? 'macos-hiddify' : 'windows-hiddify';
-  static const _clientLabel = 'pc';
+  static const _clientLabel = 'pc hid';
   static const _serverIP   = '45.95.175.170';
   static const _serverPort = 443;            // VPN server port for L1 TCP probe
   static const _proxyPort  = 12334;          // Hiddify mixed-port (HTTP)
