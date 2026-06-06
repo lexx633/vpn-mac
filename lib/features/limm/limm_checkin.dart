@@ -254,22 +254,23 @@ class LimmCheckin {
     return _postCheckin(payload);
   }
 
-  /// Send a minimal diagnostic log entry to /api/log with proper auth.
+  /// Send a minimal diagnostic log entry to /api/applog with proper auth.
   Future<(int, String)> sendLog() async {
     if (_token.isEmpty) return (0, 'no token');
     final uid = await _uid;
     try {
       final client = HttpClient()
         ..connectionTimeout = const Duration(seconds: 15);
-      final req = await client.postUrl(Uri.parse('$_apiBase/log'));
+      final req = await client.postUrl(Uri.parse('$_apiBase/applog'));
       req.headers
         ..contentType = ContentType.json
         ..add('Authorization', 'Bearer $_token');
       req.write(jsonEncode({
-        'client_uid': uid,
-        'kind':       _clientKind,
-        'label':      _clientLabel,
-        'app_version': _buildSha,
+        'client_uid':  uid,
+        'kind':        _clientKind,
+        'label':       _clientLabel,
+        'app_version': await _appVersion(),
+        'ts':          DateTime.now().millisecondsSinceEpoch ~/ 1000,
       }));
       final resp = await req.close();
       final body = await resp.transform(utf8.decoder).join();

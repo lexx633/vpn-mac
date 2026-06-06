@@ -37,8 +37,9 @@ class _LimmDiagnosticPageState extends State<LimmDiagnosticPage> {
   int _checkinSecondsLeft = 0;
   Timer? _countdownTimer;
 
-  static const _proxyPort = 12334;
-  static const _serverIP  = '45.95.175.170';
+  static const _proxyPort  = 12334;   // Hiddify mixed-port (local HTTP proxy)
+  static const _serverIP   = '45.95.175.170';
+  static const _serverPort = 443;     // VPN server port for L1 TCP probe
 
   /// curl executable: absolute path on macOS/Linux, via PATH on Windows.
   static String get _curl => Platform.isWindows ? 'curl' : '/usr/bin/curl';
@@ -78,7 +79,7 @@ class _LimmDiagnosticPageState extends State<LimmDiagnosticPage> {
     final l1samples = <int>[];
     for (var i = 0; i < 3; i++) {
       final t = DateTime.now();
-      final ok = await _curlDirect('http://$_serverIP:$_proxyPort', timeout: 5);
+      final ok = await _curlDirect('https://$_serverIP:$_serverPort', timeout: 5);
       if (ok) l1samples.add(DateTime.now().difference(t).inMilliseconds);
     }
     final l1 = l1samples.isNotEmpty ? 1 : 0;
@@ -209,12 +210,15 @@ class _LimmDiagnosticPageState extends State<LimmDiagnosticPage> {
   }
 
   // ── Status Checkin button ─────────────────────────────────────────────────
+  // Measures real latency (3×L1 direct probes avg + tunnel probe if VPN on)
+  // so the dashboard Ping column gets filled: row1=latency_ms, row2=tunnel_ms.
+  // Total worst case: 3×5s probes + 8s tunnel + 5s POST ≈ 28s → 50s timeout.
 
   Future<void> _runCheckin() async {
     if (_busy) return;
     setState(() {
       _checkinRunning = true;
-      _checkinSecondsLeft = 30;
+      _checkinSecondsLeft = 50;
     });
 
     _countdownTimer?.cancel();
@@ -225,29 +229,59 @@ class _LimmDiagnosticPageState extends State<LimmDiagnosticPage> {
       });
     });
 
-    // 30s hard timeout
+    // 50s hard timeout
     bool done = false;
-    Future.delayed(const Duration(seconds: 30), () {
+    Future.delayed(const Duration(seconds: 50), () {
       if (!done && mounted) {
         done = true;
         _countdownTimer?.cancel();
         setState(() { _checkinRunning = false; _checkinSecondsLeft = 0; });
-        _showAlert('❌ Timeout', 'No response in 30 seconds. Check VPN connection.');
+        _showAlert('❌ Timeout', 'No response in 50s.');
       }
     });
 
-    // Use performQuick: instant POST (<2s) if VPN available, no heavy curl probes.
-    // Full perform() takes 30-75s and always hit the 30s timeout.
+    // Step 1: L1 direct RTT to VPN server (3 probes, bypasses TUN via --noproxy)
+    final l1samples = <int>[];
+    for (var i = 0; i < 3; i++) {
+      final t = DateTime.now();
+      final ok = await _curlDirect('https://$_serverIP:$_serverPort', timeout: 5);
+      if (ok) l1samples.add(DateTime.now().difference(t).inMilliseconds);
+    }
+    final l1 = l1samples.isNotEmpty ? 1 : 0;
+    final latencyMs = l1samples.isNotEmpty
+        ? l1samples.reduce((a, b) => a + b) ~/ l1samples.length
+        : 0;
+
+    // Step 2: check VPN + measure tunnel latency
     final vpnOn = await LimmCheckin.shared.vpnAvailable();
-    final (code, msg) = vpnOn
-        ? await LimmCheckin.shared.performQuick()
-        : await LimmCheckin.shared.perform(overrideVpnOn: false);
+    int? tunnelMs;
+    if (vpnOn) {
+      final tStart = DateTime.now();
+      final tOk = await _curlProxy('https://www.gstatic.com/generate_204', timeout: 8);
+      if (tOk != null) tunnelMs = DateTime.now().difference(tStart).inMilliseconds;
+    }
+
+    // Step 3: POST checkin with real latency data
+    int code; String msg;
+    if (vpnOn) {
+      (code, msg) = await LimmCheckin.shared.performPostTest(
+        l0: 1, l1: l1, l4: 0,    // l4 unknown without full egress probe
+        latencyMs: latencyMs > 0 ? latencyMs : null,
+        tunnelMs: tunnelMs,
+      );
+    } else {
+      (code, msg) = await LimmCheckin.shared.perform(overrideVpnOn: false);
+    }
+
     if (!done && mounted) {
       done = true;
       _countdownTimer?.cancel();
       setState(() { _checkinRunning = false; _checkinSecondsLeft = 0; });
+      final pingInfo = latencyMs > 0
+          ? 'L1 ${latencyMs}ms${tunnelMs != null ? " · vpn ${tunnelMs}ms" : ""}'
+          : 'L1 недоступен';
       if (code == 200) {
-        _showAlert('✅ Checkin sent', 'Status updated on limm.space/stat');
+        _showAlert('✅ Checkin sent', '$pingInfo\nStatus updated on limm.space/stat');
       } else {
         _showAlert('❌ Checkin failed', 'code=$code  $msg');
       }
