@@ -12,6 +12,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class LimmCheckin {
@@ -19,6 +20,7 @@ class LimmCheckin {
   LimmCheckin._();
 
   Timer? _timer;
+  String? _cachedAppVersion;
 
   // ── Constants ─────────────────────────────────────────────────────────────
   static const _apiBase   = 'https://limm.space/api';
@@ -34,6 +36,20 @@ class LimmCheckin {
   /// curl executable: on Windows it lives in System32 and is found via PATH;
   /// on macOS/Linux use the absolute path (sandboxed apps may have a minimal PATH).
   static String get _curl => Platform.isWindows ? 'curl' : '/usr/bin/curl';
+
+  /// App version string for checkin: "hiddify-{semver}+{sha}" — e.g. "hiddify-4.1.2.10+626a4d5".
+  /// PackageInfo reads the version baked in by flutter build (--build-name / --build-number).
+  /// _buildSha is the git SHA injected at CI time via --dart-define=LIMM_BUILD_SHA.
+  Future<String> _appVersion() async {
+    if (_cachedAppVersion != null) return _cachedAppVersion!;
+    try {
+      final info = await PackageInfo.fromPlatform();
+      _cachedAppVersion = 'hiddify-${info.version}+$_buildSha';
+    } catch (_) {
+      _cachedAppVersion = 'hiddify+$_buildSha';
+    }
+    return _cachedAppVersion!;
+  }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -159,7 +175,7 @@ class LimmCheckin {
       'client_uid':   uid,
       'kind':         _clientKind,
       'label':        _clientLabel,
-      'app_version':  'hiddify+$_buildSha',
+      'app_version':  await _appVersion(),
       'l0_local_net': l0,
       'l1_tcp443':    l1,
       'l2_handshake': l2,
@@ -187,7 +203,7 @@ class LimmCheckin {
       'client_uid':   uid,
       'kind':         _clientKind,
       'label':        _clientLabel,
-      'app_version':  'hiddify+$_buildSha',
+      'app_version':  await _appVersion(),
       'l0_local_net': 1, 'l1_tcp443': 1, 'l2_handshake': 1, 'l3_tunnel': 1, 'l4_dest': 1,
       'vpn_running':  1,
       'raw': {
@@ -219,7 +235,7 @@ class LimmCheckin {
       'client_uid':   uid,
       'kind':         _clientKind,
       'label':        _clientLabel,
-      'app_version':  'hiddify+$_buildSha',
+      'app_version':  await _appVersion(),
       'l0_local_net': l0,
       'l1_tcp443':    l1,
       'l2_handshake': l4,   // if L4 passed, handshake must have worked
