@@ -13,7 +13,7 @@ abstract class Constants {
   static const privacyPolicyUrl = "https://hiddify.com/privacy-policy/";
   static const termsAndConditionsUrl = "https://hiddify.com/terms/";
   // limm
-  static const limmSubUrl      = "https://limm.space/vpn/sub";
+  static const limmSubUrl      = "https://limm.space/vpn/sub/ru";
   static const limmApiBase     = "https://limm.space/api";
   static const limmMonitorUrl  = "https://limm.space/api/applog";  // legacy
   static const limmFirstRunKey = "limm_subscription_added";
