@@ -41,7 +41,7 @@ class _LimmDiagnosticPageState extends State<LimmDiagnosticPage> {
   static const _serverIP  = '45.95.175.170';
 
   /// curl executable: absolute path on macOS/Linux, via PATH on Windows.
-  static String get _curl => Platform.isWindows ? 'curl' : _curl;
+  static String get _curl => Platform.isWindows ? 'curl' : '/usr/bin/curl';
 
   // ── Logging ───────────────────────────────────────────────────────────────
 
