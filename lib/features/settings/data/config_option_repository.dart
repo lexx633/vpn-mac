@@ -37,7 +37,7 @@ abstract class ConfigOptions {
     mapFrom: Region.values.byName,
     mapTo: (value) => value.name,
   );
-  static final useXrayCoreWhenPossible = PreferencesNotifier.create<bool, bool>("use-xray-core-when-possible", false);
+  static final useXrayCoreWhenPossible = PreferencesNotifier.create<bool, bool>("use-xray-core-when-possible", true);
   // static final blockAds = PreferencesNotifier.create<bool, bool>("block-ads", false);
   static final logLevel = PreferencesNotifier.create<LogLevel, String>(
     "log-level",
@@ -57,7 +57,7 @@ abstract class ConfigOptions {
 
   static final remoteDnsAddress = PreferencesNotifier.create<String, String>(
     "remote-dns-address",
-    "tcp://8.8.8.8",
+    "https://1.1.1.1/dns-query",
     possibleValues: List.of([
       "local",
       // "udp://223.5.5.5",
@@ -128,7 +128,7 @@ abstract class ConfigOptions {
 
   static final tunImplementation = PreferencesNotifier.create<TunImplementation, String>(
     "tun-implementation",
-    TunImplementation.gvisor,
+    TunImplementation.system,
     mapFrom: TunImplementation.values.byName,
     mapTo: (value) => value.name,
   );
