@@ -175,6 +175,14 @@ class LimmCheckin {
       chgptStatus = svcResults[2];
     }
 
+    // browser_ok — честный признак «трафик идёт через туннель»: реальная страница
+    // загрузилась (сервис ok / egress подтверждён / generate_204 прошёл). В TUN/прокси
+    // проба ipify (l4) флакает, поэтому page-load надёжнее. См. api.py verdict-логику.
+    final browserOk = (l4 == 1 ||
+            tunnelMs != null ||
+            tgStatus == 'ok' || gglStatus == 'ok' || chgptStatus == 'ok')
+        ? 1 : 0;
+
     final payload = <String, dynamic>{
       'client_uid':   uid,
       'kind':         _clientKind,
@@ -185,6 +193,7 @@ class LimmCheckin {
       'l2_handshake': l2,
       'l3_tunnel':    l3,
       'l4_dest':      l4,
+      'browser_ok':   vpnOn ? browserOk : 0,
       'vpn_running':  vpnOn ? 1 : 0,
       'raw': {
         'egress_ip':     egressIp,
@@ -209,6 +218,7 @@ class LimmCheckin {
       'label':        _clientLabel,
       'app_version':  await _appVersion(),
       'l0_local_net': 1, 'l1_tcp443': 1, 'l2_handshake': 1, 'l3_tunnel': 1, 'l4_dest': 1,
+      'browser_ok':   1,
       'vpn_running':  1,
       'raw': {
         'egress_ip':     _serverIP,
@@ -235,6 +245,11 @@ class LimmCheckin {
     String chgptStatus = 'down',
   }) async {
     final uid = await _uid;
+    // browser_ok — реальная страница прошла через туннель (см. perform()/api.py).
+    final browserOk = (l4 == 1 ||
+            tunnelMs != null ||
+            tgStatus == 'ok' || gglStatus == 'ok' || chgptStatus == 'ok')
+        ? 1 : 0;
     final payload = <String, dynamic>{
       'client_uid':   uid,
       'kind':         _clientKind,
@@ -245,6 +260,7 @@ class LimmCheckin {
       'l2_handshake': l4,   // if L4 passed, handshake must have worked
       'l3_tunnel':    l4,
       'l4_dest':      l4,
+      'browser_ok':   browserOk,
       'vpn_running':  1,    // VPN IS running (we verified socket before calling this)
       'raw': {
         'egress_ip':     egressIp,
