@@ -311,24 +311,27 @@ class LimmCheckin {
 
       final client = HttpClient()
         ..connectionTimeout = const Duration(seconds: 20);
-      final req = await client.postUrl(Uri.parse('$_apiBase/applog'));
-      req.headers
-        ..contentType = ContentType.json
-        ..add('Authorization', 'Bearer $_token');
-      final payload = <String, dynamic>{
-        'client_uid':  uid,
-        'kind':        _clientKind,
-        'label':       _clientLabel,
-        'app_version': await _appVersion(),
-        'ts':          DateTime.now().millisecondsSinceEpoch ~/ 1000,
-        if (boxLog.isNotEmpty) 'box_log': boxLog,
-        if (appLog.isNotEmpty) 'app_log': appLog,
-      };
-      req.write(jsonEncode(payload));
-      final resp = await req.close();
-      final body = await resp.transform(utf8.decoder).join();
-      client.close();
-      return (resp.statusCode, body);
+      try {
+        final req = await client.postUrl(Uri.parse('$_apiBase/applog'));
+        req.headers
+          ..contentType = ContentType.json
+          ..add('Authorization', 'Bearer $_token');
+        final payload = <String, dynamic>{
+          'client_uid':  uid,
+          'kind':        _clientKind,
+          'label':       _clientLabel,
+          'app_version': await _appVersion(),
+          'ts':          DateTime.now().millisecondsSinceEpoch ~/ 1000,
+          if (boxLog.isNotEmpty) 'box_log': boxLog,
+          if (appLog.isNotEmpty) 'app_log': appLog,
+        };
+        req.write(jsonEncode(payload));
+        final resp = await req.close();
+        final body = await resp.transform(utf8.decoder).join();
+        return (resp.statusCode, body);
+      } finally {
+        client.close();
+      }
     } catch (e) {
       return (0, e.toString());
     }
@@ -347,17 +350,20 @@ class LimmCheckin {
     try {
       final client = HttpClient()
         ..connectionTimeout = const Duration(seconds: 10);
-      final req = await client.postUrl(Uri.parse('$_apiBase/fulltest'));
-      req.headers
-        ..contentType = ContentType.json
-        ..add('Authorization', 'Bearer $_token');
-      req.write(jsonEncode({
-        'client_uid': uid,
-        'kind': _clientKind,
-        'profiles': [profile],
-      }));
-      await req.close();
-      client.close();
+      try {
+        final req = await client.postUrl(Uri.parse('$_apiBase/fulltest'));
+        req.headers
+          ..contentType = ContentType.json
+          ..add('Authorization', 'Bearer $_token');
+        req.write(jsonEncode({
+          'client_uid': uid,
+          'kind': _clientKind,
+          'profiles': [profile],
+        }));
+        await req.close();
+      } finally {
+        client.close();
+      }
     } catch (_) {}
   }
 
@@ -405,8 +411,9 @@ class LimmCheckin {
         '--proxy', 'http://127.0.0.1:$port',
         url,
       ]);
-      if (r.exitCode != 0 && r.exitCode != 52 && r.exitCode != 200) return null;
-      return r.stdout.toString().trim();
+      if (r.exitCode != 0) return null;
+      final body = r.stdout.toString().trim();
+      return body.isEmpty ? null : body;
     } catch (_) {
       return null;
     }
@@ -438,15 +445,18 @@ class LimmCheckin {
     try {
       final client = HttpClient()
         ..connectionTimeout = const Duration(seconds: 20);
-      final req = await client.postUrl(Uri.parse('$_apiBase/checkin'));
-      req.headers
-        ..contentType = ContentType.json
-        ..add('Authorization', 'Bearer $_token');
-      req.write(jsonEncode(payload));
-      final resp = await req.close();
-      final body = await resp.transform(utf8.decoder).join();
-      client.close();
-      return (resp.statusCode, body);
+      try {
+        final req = await client.postUrl(Uri.parse('$_apiBase/checkin'));
+        req.headers
+          ..contentType = ContentType.json
+          ..add('Authorization', 'Bearer $_token');
+        req.write(jsonEncode(payload));
+        final resp = await req.close();
+        final body = await resp.transform(utf8.decoder).join();
+        return (resp.statusCode, body);
+      } finally {
+        client.close();
+      }
     } catch (e) {
       return (0, e.toString());
     }

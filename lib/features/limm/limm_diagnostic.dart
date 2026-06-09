@@ -64,6 +64,7 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
   Future<void> _runFullTest() async {
     if (_busy) return;
     setState(() { _testRunning = true; _log.clear(); });
+    try {
     final globalStart = DateTime.now();
     _append('── Full Test начат ${_ts()} ──\n');
 
@@ -228,7 +229,9 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
     _append(success ? '✓ OK  [всего ${total}s]' : '✗ Есть ошибки  [всего ${total}s]');
     _append('── Full Test завершён ${_ts()} ──');
 
-    setState(() => _testRunning = false);
+    } finally {
+      setState(() => _testRunning = false);
+    }
   }
 
   // ── Send Diagnostic Log (standalone) ─────────────────────────────────────
