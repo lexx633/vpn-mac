@@ -95,10 +95,18 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
     // Step 3: test current profile through proxy
     _append('\n── Текущий профиль ──\n');
 
-    // 3a: egress IP
+    // 3a: egress IP — up to 3 attempts (XHTTP may time out on first request)
     _append('⏳ Egress IP (api.ipify.org)…');
     final t3a = DateTime.now();
-    final ip = await _curlProxy('https://api.ipify.org', timeout: 20);
+    String? ip;
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      ip = await _curlProxy('https://api.ipify.org', timeout: 20);
+      if (ip != null) break;
+      if (attempt < 3) {
+        _append('    ↻  попытка ${attempt + 1}/3…');
+        await Future.delayed(const Duration(milliseconds: 500));
+      }
+    }
     final ms3a = DateTime.now().difference(t3a).inMilliseconds;
     final egressIp = ip?.trim() ?? '';
     final l4 = egressIp == _serverIP ? 1 : 0;
