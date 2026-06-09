@@ -221,8 +221,11 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
         : '✗ Лог отправлен  ($logMsg)  [${ms6}ms]');
 
     final total = DateTime.now().difference(globalStart).inSeconds;
+    // tunnelMs != null means gstatic probe through tunnel succeeded — tunnel alive
+    // even if ipify (l4) flaked; avoids false "✗ Есть ошибки" on healthy connections
+    final success = l4 == 1 || tunnelMs != null;
     _append('\n─────────────────────────────────────');
-    _append(l4 == 1 ? '✓ OK  [всего ${total}s]' : '✗ Есть ошибки  [всего ${total}s]');
+    _append(success ? '✓ OK  [всего ${total}s]' : '✗ Есть ошибки  [всего ${total}s]');
     _append('── Full Test завершён ${_ts()} ──');
 
     setState(() => _testRunning = false);

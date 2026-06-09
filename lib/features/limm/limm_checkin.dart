@@ -84,17 +84,20 @@ class LimmCheckin {
 
   // ── VPN availability check ─────────────────────────────────────────────────
 
-  /// Returns true if Hiddify proxy is available (VPN on indicator).
-  /// Uses socket check first, then curl fallback.
+  /// Returns true if Hiddify proxy is available AND the upstream tunnel is alive.
+  /// Socket check is a fast pre-flight only — port listening ≠ tunnel working.
   Future<bool> vpnAvailable() async {
-    // 1. Socket check (fast)
+    // 1. Fast pre-flight: if port isn't listening at all, skip curl
+    bool portListening = false;
     try {
       final sock = await Socket.connect('127.0.0.1', _proxyPort,
           timeout: const Duration(seconds: 1));
       sock.destroy();
-      return true;
+      portListening = true;
     } catch (_) {}
-    // 2. Curl fallback — try a request through proxy
+    if (!portListening) return false;
+
+    // 2. Curl probe through proxy — confirms upstream tunnel is alive, not just port open
     try {
       final r = await Process.run(_curl, [
         '--max-time', '3', '--connect-timeout', '2',
@@ -257,8 +260,8 @@ class LimmCheckin {
       'app_version':  await _appVersion(),
       'l0_local_net': l0,
       'l1_tcp443':    l1,
-      'l2_handshake': l4,   // if L4 passed, handshake must have worked
-      'l3_tunnel':    l4,
+      'l2_handshake': browserOk, // derived from tunnelMs/services/l4, not just l4
+      'l3_tunnel':    browserOk,
       'l4_dest':      l4,
       'browser_ok':   browserOk,
       'vpn_running':  1,    // VPN IS running (we verified socket before calling this)
