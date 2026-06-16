@@ -14,6 +14,10 @@ abstract class Constants {
   static const termsAndConditionsUrl = "https://hiddify.com/terms/";
   // limm
   static const limmSubUrl      = "https://limm.space/vpn/sub/ru";
+  // Subscription mirror hosts (same RU1 origin): direct www first, then vpn (Bunny CDN),
+  // then bare limm (Cloudflare). A blocked path no longer stops the server list updating.
+  static const limmSubHosts    = ["www.limm.space", "vpn.limm.space", "limm.space"];
+  static const limmSubPath     = "/vpn/sub/ru";
   static const limmApiBase     = "https://limm.space/api";
   static const limmMonitorUrl  = "https://limm.space/api/applog";  // legacy
   static const limmFirstRunKey = "limm_subscription_added";

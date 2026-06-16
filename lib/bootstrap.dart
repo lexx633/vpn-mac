@@ -28,6 +28,7 @@ import 'package:hiddify/features/window/notifier/window_notifier.dart';
 import 'package:hiddify/hiddifycore/hiddify_core_service_provider.dart';
 import 'package:hiddify/core/model/constants.dart';
 import 'package:hiddify/features/limm/limm_checkin.dart';
+import 'package:hiddify/features/limm/limm_sub_fallback.dart';
 import 'package:hiddify/riverpod_observer.dart';
 import 'package:hiddify/utils/utils.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
@@ -93,9 +94,11 @@ Future<void> lazyBootstrap(WidgetsBinding widgetsBinding, Environment env) async
     final prefs = container.read(sharedPreferencesProvider).requireValue;
     if (prefs.getBool(Constants.limmFirstRunKey) != true) {
       final repo = container.read(profileRepositoryProvider).requireValue;
-      await repo.upsertRemote(Constants.limmSubUrl).run();
+      // Pre-flight: register against the first reachable mirror (www → vpn → limm).
+      final subUrl = await LimmSubFallback.resolveWorkingUrl();
+      await repo.upsertRemote(subUrl).run();
       await prefs.setBool(Constants.limmFirstRunKey, true);
-      Logger.bootstrap.info("limm: subscription added");
+      Logger.bootstrap.info("limm: subscription added ($subUrl)");
     }
   }, timeout: 15000);
 
