@@ -495,7 +495,7 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
 
           _append(ok
               ? '  ✓ $display  $egressIp  [${tunnelMs}ms]'
-                '${browserOk ? '  204✓' : '  204✗'}${known ? '' : '  (egress вне sub)'}'
+                '${browserOk ? '  проверка сайта ✓' : '  проверка сайта ✗'}${known ? '' : '  (egress вне sub)'}'
               : '  ✗ $display  нет ответа');
 
           final profile = <String, dynamic>{'name': display, 'ok': ok ? 1 : 0};
