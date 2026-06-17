@@ -31,6 +31,7 @@ import 'package:hiddify/features/limm/limm_checkin.dart';
 import 'package:hiddify/hiddifycore/generated/v2/hcore/hcore.pb.dart';
 import 'package:hiddify/hiddifycore/hiddify_core_service_provider.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:path_provider/path_provider.dart';
 
 class LimmDiagnosticPage extends ConsumerStatefulWidget {
   const LimmDiagnosticPage({super.key});
@@ -393,62 +394,72 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
     final results = <Map<String, dynamic>>[];
 
     final coreService = ref.read(hiddifyCoreServiceProvider);
-    // Force a FRESH groups snapshot from the core. The diagnostic page never subscribes to
-    // watchActiveGroups(), so coreService.latest can be stale/thin → the loop saw only the
-    // active profile and tested just one. .first triggers mainOutboundsInfo and repopulates.
-    var groups = coreService.latest;
-    try {
-      // watchActiveGroups() does .startWith(latest) (stale), so skip(1) to get the FIRST
-      // real emission from the core (which also refreshes coreService.latest).
-      groups = await coreService.watchActiveGroups().skip(1).first.timeout(const Duration(seconds: 6));
-    } catch (_) {
-      groups = coreService.latest;
-    }
-    if (groups.isEmpty) groups = coreService.latest;
 
-    // Pick the selectable selector with the MOST members (the main node selector — avoids
-    // accidentally grabbing a 1-item helper selector).
-    OutboundGroup? sel;
-    for (final g in groups) {
-      if (g.type.toLowerCase() == 'selector' && g.selectable) {
-        if (sel == null || g.items.length > sel.items.length) sel = g;
+    // Source the profile list from the on-disk RUNNING config (data/current-config.json):
+    // the gRPC mainOutboundsInfo/watchActiveGroups returns a TRUNCATED selector (often only
+    // the active node — that was the "1 profile" bug), but the config the core actually
+    // loaded has the full "select" group with every node.
+    String groupTag = 'select';
+    String originalTag = '';
+    var testable = <String>[];
+    try {
+      final dir = await getApplicationSupportDirectory();
+      final cfg = jsonDecode(
+          await File('${dir.path}/data/current-config.json').readAsString()) as Map<String, dynamic>;
+      final obs = (cfg['outbounds'] as List).cast<Map<String, dynamic>>();
+      // tags that are themselves groups (selector/urltest/balancer/direct/...) — not nodes.
+      const groupTypes = {'selector', 'urltest', 'balancer', 'direct', 'block', 'dns'};
+      final groupTagSet = <String>{
+        for (final o in obs)
+          if (groupTypes.contains((o['type'] as String?)?.toLowerCase())) o['tag'] as String,
+      };
+      final selObj = obs.firstWhere(
+          (o) => (o['type'] as String?)?.toLowerCase() == 'selector',
+          orElse: () => <String, dynamic>{});
+      if (selObj.isNotEmpty) {
+        groupTag = selObj['tag'] as String? ?? 'select';
+        originalTag = selObj['default'] as String? ?? '';
+        final members = (selObj['outbounds'] as List?)?.cast<String>() ?? const [];
+        testable = members
+            .where((t) => !groupTagSet.contains(t) && !_ftSkipTags.contains(t))
+            .toList();
+      }
+    } catch (_) {}
+
+    // Fallback to the gRPC group cache if the config couldn't be read.
+    if (testable.isEmpty) {
+      var groups = coreService.latest;
+      try {
+        groups = await coreService.watchActiveGroups().skip(1).first.timeout(const Duration(seconds: 6));
+      } catch (_) {}
+      OutboundGroup? sel;
+      for (final g in groups) {
+        if (g.type.toLowerCase() == 'selector' && g.selectable) {
+          if (sel == null || g.items.length > sel.items.length) sel = g;
+        }
+      }
+      if (sel != null) {
+        groupTag = sel.tag;
+        if (originalTag.isEmpty) originalTag = sel.selected;
+        testable = sel.items
+            .where((i) => !_ftSkipTags.contains(i.tag) && !_ftSkipTypes.contains(i.type.toLowerCase()))
+            .map((i) => i.tag)
+            .toList();
       }
     }
-    if (sel == null) {
-      _append('⚠️  Selector group не найден (групп: ${groups.length}) — нет профилей');
+
+    if (testable.isEmpty) {
+      _append('⚠️  Профили не найдены — нет данных для теста');
       return results;
     }
-
-    final groupTag = sel.tag;
-    final originalTag = sel.selected;
-    _append('Selector: "$groupTag"  текущий: "$originalTag"');
-
-    final testable = sel.items
-        .where((i) => !_ftSkipTags.contains(i.tag) && !_ftSkipTypes.contains(i.type.toLowerCase()))
-        .toList();
-    _append('Профилей: ${testable.length}\n');
-
-    // TEMP DEBUG (remove after diagnosis): dump the real group structure into the payload
-    // so it shows up in monitor.db — the loop keeps producing only 1 profile and the source
-    // of the list needs to be seen at runtime.
-    results.add({
-      'name': 'DBG',
-      'ok': 0,
-      'groups_n': groups.length,
-      'groups': groups.map((g) => '${g.tag}/${g.type}/sel=${g.selectable}/n=${g.items.length}').join(' | '),
-      'sel_tag': groupTag,
-      'sel_items': sel.items.length,
-      'testable': testable.length,
-      'item_tags': testable.map((i) => '${i.tag}(${i.type})').join(','),
-    });
+    _append('Selector: "$groupTag"  профилей: ${testable.length}\n');
 
     String? bestTag;       // best working profile → kept active for log phase (F1.1)
     int? bestMs;
 
     try {
-      for (final item in testable) {
-        final tag = item.tag;
-        final display = item.tagDisplay.isNotEmpty ? item.tagDisplay : tag;
+      for (final tag in testable) {
+        final display = tag;
         // Bulletproof: the WHOLE per-profile body is guarded, so no single failure (switch
         // timeout, probe error, anything) can abort the loop — every profile is attempted.
         try {
