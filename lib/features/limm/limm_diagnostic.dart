@@ -393,15 +393,29 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
     final results = <Map<String, dynamic>>[];
 
     final coreService = ref.read(hiddifyCoreServiceProvider);
-    final groups = coreService.latest;
+    // Force a FRESH groups snapshot from the core. The diagnostic page never subscribes to
+    // watchActiveGroups(), so coreService.latest can be stale/thin → the loop saw only the
+    // active profile and tested just one. .first triggers mainOutboundsInfo and repopulates.
+    var groups = coreService.latest;
+    try {
+      // watchActiveGroups() does .startWith(latest) (stale), so skip(1) to get the FIRST
+      // real emission from the core (which also refreshes coreService.latest).
+      groups = await coreService.watchActiveGroups().skip(1).first.timeout(const Duration(seconds: 6));
+    } catch (_) {
+      groups = coreService.latest;
+    }
+    if (groups.isEmpty) groups = coreService.latest;
 
-    // Find the main selector group (selectable == true)
+    // Pick the selectable selector with the MOST members (the main node selector — avoids
+    // accidentally grabbing a 1-item helper selector).
     OutboundGroup? sel;
     for (final g in groups) {
-      if (g.type.toLowerCase() == 'selector' && g.selectable) { sel = g; break; }
+      if (g.type.toLowerCase() == 'selector' && g.selectable) {
+        if (sel == null || g.items.length > sel.items.length) sel = g;
+      }
     }
     if (sel == null) {
-      _append('⚠️  Selector group не найден — нет профилей для теста');
+      _append('⚠️  Selector group не найден (групп: ${groups.length}) — нет профилей');
       return results;
     }
 
@@ -421,55 +435,57 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
       for (final item in testable) {
         final tag = item.tag;
         final display = item.tagDisplay.isNotEmpty ? item.tagDisplay : tag;
-        final ttype = _transportType(tag);
-        final (timeout, retries) = _ftBudget(ttype);
-        _append('    $display…');
-
-        // selectOutbound gRPC has a short deadline and RETHROWS on timeout — a real
-        // outbound switch can exceed 1s, so use a 5s deadline AND catch any throw so one
-        // slow/failed switch never kills the whole loop (the bug: only the pre-selected
-        // profile got tested because iteration 2's switch timed out and threw).
+        // Bulletproof: the WHOLE per-profile body is guarded, so no single failure (switch
+        // timeout, probe error, anything) can abort the loop — every profile is attempted.
         try {
-          await coreService
-              .selectOutbound(groupTag, tag, timeout: const Duration(seconds: 5))
-              .run();
-        } catch (_) {
-          // gRPC deadline exceeded — the switch may still apply; proceed and let the
-          // egress probe be the source of truth.
-        }
+          final ttype = _transportType(tag);
+          final (timeout, retries) = _ftBudget(ttype);
+          _append('    $display…');
 
-        await Future.delayed(const Duration(milliseconds: 1800));
+          // selectOutbound gRPC rethrows on its deadline — use 5s and swallow; the switch
+          // may still apply and the egress probe is the source of truth.
+          try {
+            await coreService
+                .selectOutbound(groupTag, tag, timeout: const Duration(seconds: 5))
+                .run();
+          } catch (_) {}
 
-        // §7.4 egress probe — success ends retries (only the failing profile pays).
-        String? egressIp;
-        int? tunnelMs;
-        for (var attempt = 1; attempt <= retries; attempt++) {
-          final t = DateTime.now();
-          egressIp = await _egressViaProxy(timeout: timeout);
-          if (egressIp != null) { tunnelMs = DateTime.now().difference(t).inMilliseconds; break; }
-          if (attempt < retries) await Future.delayed(const Duration(milliseconds: 500));
-        }
+          await Future.delayed(const Duration(milliseconds: 1800));
 
-        // §7.4 verdict: any egress = tunnel carries traffic. Never compare with a single IP.
-        final ok = egressIp != null;
-        // §7.2 L4 liveness only on live profiles (dead ones never reach here).
-        final browserOk = ok && (await _probe204(timeout: timeout)) != null;
-        final known = ok && knownIPs.contains(egressIp);
+          // §7.4 egress probe — success ends retries (only the failing profile pays).
+          String? egressIp;
+          int? tunnelMs;
+          for (var attempt = 1; attempt <= retries; attempt++) {
+            final t = DateTime.now();
+            egressIp = await _egressViaProxy(timeout: timeout);
+            if (egressIp != null) { tunnelMs = DateTime.now().difference(t).inMilliseconds; break; }
+            if (attempt < retries) await Future.delayed(const Duration(milliseconds: 500));
+          }
 
-        _append(ok
-            ? '  ✓ $display  $egressIp  [${tunnelMs}ms]'
-              '${browserOk ? '  204✓' : '  204✗'}${known ? '' : '  (egress вне sub)'}'
-            : '  ✗ $display  нет ответа');
+          // §7.4 verdict: any egress = tunnel carries traffic. Never compare with a single IP.
+          final ok = egressIp != null;
+          // §7.2 L4 liveness only on live profiles (dead ones never reach here).
+          final browserOk = ok && (await _probe204(timeout: timeout)) != null;
+          final known = ok && knownIPs.contains(egressIp);
 
-        final profile = <String, dynamic>{'name': display, 'ok': ok ? 1 : 0};
-        if (egressIp != null) profile['egress_ip'] = egressIp;
-        if (tunnelMs != null) profile['latency_ms'] = tunnelMs;
-        profile['browser_ok'] = browserOk ? 1 : 0;
-        results.add(profile);
+          _append(ok
+              ? '  ✓ $display  $egressIp  [${tunnelMs}ms]'
+                '${browserOk ? '  204✓' : '  204✗'}${known ? '' : '  (egress вне sub)'}'
+              : '  ✗ $display  нет ответа');
 
-        if (ok && (bestMs == null || (tunnelMs ?? 1 << 30) < bestMs)) {
-          bestTag = tag;
-          bestMs = tunnelMs ?? (1 << 30);
+          final profile = <String, dynamic>{'name': display, 'ok': ok ? 1 : 0};
+          if (egressIp != null) profile['egress_ip'] = egressIp;
+          if (tunnelMs != null) profile['latency_ms'] = tunnelMs;
+          profile['browser_ok'] = browserOk ? 1 : 0;
+          results.add(profile);
+
+          if (ok && (bestMs == null || (tunnelMs ?? 1 << 30) < bestMs)) {
+            bestTag = tag;
+            bestMs = tunnelMs ?? (1 << 30);
+          }
+        } catch (e) {
+          _append('  ✗ $display  (ошибка: $e)');
+          results.add({'name': display, 'ok': 0});
         }
       }
     } finally {
