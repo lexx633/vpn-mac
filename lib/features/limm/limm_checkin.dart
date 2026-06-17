@@ -486,6 +486,7 @@ class LimmCheckin {
   Future<bool> _curlDirect(String url, {int timeout = 6}) async {
     try {
       final r = await Process.run(_curl, [
+        '-4',
         '--max-time',      '$timeout',
         '--connect-timeout', '${(timeout - 1).clamp(1, timeout)}',
         '-s', '-o', '/dev/null',
@@ -539,6 +540,7 @@ class LimmCheckin {
       {required int port, int timeout = 10}) async {
     try {
       final r = await Process.run(_curl, [
+        '-4',
         '--max-time',      '$timeout',
         '--connect-timeout', '${(timeout - 2).clamp(2, timeout)}',
         '-s',
@@ -560,6 +562,7 @@ class LimmCheckin {
     try {
       final t0 = DateTime.now();
       final r = await Process.run(_curl, [
+        '-4',
         '--max-time',        '$timeout',
         '--connect-timeout', '${(timeout - 2).clamp(2, timeout)}',
         '-s', '-o', _devNull, '-w', '%{http_code}',
@@ -580,6 +583,7 @@ class LimmCheckin {
   Future<String> _probeService(String url, {required int port}) async {
     try {
       final r = await Process.run(_curl, [
+        '-4',
         '--max-time',      '12',
         '--connect-timeout', '10',
         '-s', '-o', '/dev/null', '-w', '%{http_code}',
