@@ -43,6 +43,13 @@ class LimmCheckin {
     'https://limm.space/vpn/sub',
   ];
 
+  // §7.3 egress mirrors: own echo endpoint first, ipify only as last resort.
+  static const _myipURLs = [
+    'https://www.limm.space/api/myip',
+    'https://vpn.limm.space/api/myip',
+    'https://limm.space/api/myip',
+  ];
+
   /// curl executable: on Windows it lives in System32 and is found via PATH;
   /// on macOS/Linux use the absolute path (sandboxed apps may have a minimal PATH).
   static String get _curl => Platform.isWindows ? 'curl' : '/usr/bin/curl';
@@ -214,9 +221,9 @@ class LimmCheckin {
       l2 = l2body != null ? 1 : 0;
       l3 = l2;
 
-      // L4: egress IP through tunnel — compare against all known node IPs from sub
-      final ip = await _curlProxy('https://api.ipify.org',
-          port: _proxyPort, timeout: 15);
+      // L4: egress IP through tunnel — §7.3 /api/myip first, ipify fallback;
+      // compare against all known node IPs from sub.
+      final ip = await _egressViaProxy(timeout: 15);
       if (ip != null && ip.isNotEmpty) {
         egressIp = ip.trim();
         final serverIPs = await _knownServerIPs();
@@ -487,6 +494,23 @@ class LimmCheckin {
     } catch (_) {
       return false;
     }
+  }
+
+  /// Egress IP through the tunnel (§7.3): /api/myip mirrors first, ipify fallback.
+  /// Parses {"ip": "..."} JSON from our endpoint; ipify returns the raw IP.
+  Future<String?> _egressViaProxy({int timeout = 15}) async {
+    for (final url in _myipURLs) {
+      final body = await _curlProxy(url, port: _proxyPort, timeout: timeout);
+      if (body != null) {
+        try {
+          final m = jsonDecode(body);
+          final ip = (m is Map) ? m['ip'] : null;
+          if (ip is String && ip.trim().isNotEmpty) return ip.trim();
+        } catch (_) {}
+      }
+    }
+    final ip = await _curlProxy('https://api.ipify.org', port: _proxyPort, timeout: timeout);
+    return (ip != null && ip.trim().isNotEmpty) ? ip.trim() : null;
   }
 
   /// HTTP request through Hiddify HTTP proxy.

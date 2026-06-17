@@ -1,13 +1,21 @@
 // limm_diagnostic.dart — Full Test + Status Checkin page.
 // Accessible from the app's menu / navigation.
 //
+// Full Test conforms to the cross-fork contract in docs/TZ-fulltest-optim.md §7:
+//   §7.3 egress endpoint: /api/myip (www→vpn→limm mirrors) first, api.ipify.org fallback.
+//   §7.4 verdict:         ok = egress != null (any egress = tunnel carries traffic;
+//                         chains exit via different nodes — never compare with one IP).
+//   §7.2 L4 liveness:     generate_204 through tunnel → browser_ok per profile.
+//   §7.5 timeouts:        by transport type (xhttp 8s×3, hy2/tuic 6s×2, tcp 6s×2).
+//   §7.7 payload:         per-profile {name, ok, egress_ip, browser_ok, latency_ms}.
+//
 // Full Test steps (tests ALL outbounds from the selector group):
 //   1. Baseline checkin (overrideVpnOn=false)
-//   2. Fetch known server IPs from subscription
-//   3. Iterate all outbounds: selectOutbound → wait 1.8s → egress IP via proxy → ok?
+//   2. Fetch known server IPs from subscription (informational; verdict is egress!=null)
+//   3. Iterate all outbounds: selectOutbound → settle → egress via /api/myip → 204 liveness
 //   4. POST /api/fulltest with all profile results
-//   5. Final checkin (VPN on if any profile passed, off otherwise)
-//   6. Send diagnostic log
+//   5. Keep best working profile active → final checkin on the live tunnel
+//   6. Send diagnostic log; restore original selection only if nothing worked
 //
 // Status Checkin: L1 direct TCP ping + tunnel latency (gstatic) → POST /api/checkin.
 //
@@ -15,6 +23,7 @@
 //   [Full Test]  [Send Diagnostic Log]  [Status Checkin]
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -43,8 +52,36 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
   static const _serverIP   = '45.95.175.170';
   static const _serverPort = 443;     // VPN server port for L1 TCP probe
 
+  // §7.3 egress mirrors: our own echo endpoint first, ipify only as last resort.
+  static const _myipURLs = [
+    'https://www.limm.space/api/myip',
+    'https://vpn.limm.space/api/myip',
+    'https://limm.space/api/myip',
+  ];
+
   /// curl executable: absolute path on macOS/Linux, via PATH on Windows.
   static String get _curl => Platform.isWindows ? 'curl' : '/usr/bin/curl';
+
+  /// Null device for curl -o (discard body).
+  static String get _devNull => Platform.isWindows ? 'NUL' : '/dev/null';
+
+  // §7.5 per-transport-type egress timeout/retry budget. Type derived from tag suffix.
+  static String _transportType(String tag) {
+    final t = tag.toLowerCase();
+    if (t.contains('-tc') || t.contains('tuic')) return 'tuic';
+    if (t.contains('-hy2') || t.contains('hysteria')) return 'hy2';
+    if (t.contains('xhttp')) return 'xhttp';
+    return 'tcp'; // reality / ws / cf-ws / relay
+  }
+
+  static (int, int) _ftBudget(String type) {
+    switch (type) {
+      case 'xhttp': return (8, 3);
+      case 'hy2':
+      case 'tuic':  return (6, 2);
+      default:      return (6, 2); // tcp
+    }
+  }
 
   // ── Logging ───────────────────────────────────────────────────────────────
 
@@ -95,17 +132,25 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
         _append('\n✓ Результаты отправлены: $okCount/${profileResults.length} профилей работают');
       }
 
-      // Step 5: post-test checkin based on overall result
+      // Step 5: post-test checkin based on overall result.
+      // Pick the best working profile (lowest tunnel latency) — its tunnel is now active.
       final anyOk = profileResults.any((r) => r['ok'] == 1);
       _append('\n⏳ Чекин (итог)…');
-      final bestTunnelMs = profileResults
-          .where((r) => r['ok'] == 1 && r.containsKey('latency_ms'))
-          .map<int>((r) => r['latency_ms'] as int)
-          .fold<int?>(null, (best, ms) => best == null || ms < best ? ms : best);
+      Map<String, dynamic>? best;
+      for (final r in profileResults.where((r) => r['ok'] == 1)) {
+        final ms = r['latency_ms'] as int?;
+        if (best == null) { best = r; continue; }
+        final bms = best['latency_ms'] as int?;
+        if (ms != null && (bms == null || ms < bms)) best = r;
+      }
+      final bestTunnelMs = best?['latency_ms'] as int?;
+      final bestEgress   = best?['egress_ip'] as String? ?? '';
+      final anyBrowserOk = profileResults.any((r) => r['browser_ok'] == 1);
       int cFinal; String mFinal;
       if (anyOk) {
         (cFinal, mFinal) = await LimmCheckin.shared.performPostTest(
-          l0: 1, l1: 1, l4: 1, tunnelMs: bestTunnelMs,
+          l0: 1, l1: 1, l4: anyBrowserOk ? 1 : 0,
+          egressIp: bestEgress, tunnelMs: bestTunnelMs,
         );
       } else {
         (cFinal, mFinal) = await LimmCheckin.shared.perform(overrideVpnOn: false);
@@ -294,9 +339,45 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
   static const _ftSkipTags  = {'direct', 'block', 'dns-out', 'GLOBAL', 'REJECT'};
   static const _ftSkipTypes = {'selector', 'urltest', 'dns', 'block', 'direct'};
 
-  /// Test all outbounds in the main selector group sequentially.
-  /// Switches each outbound, waits for routing to settle, tests egress IP.
-  /// Restores the original selection on exit (success or error).
+  /// Egress IP through the active tunnel (§7.3): /api/myip mirrors first, ipify fallback.
+  /// Each call uses --no-keepalive so it rides the freshly-switched outbound.
+  Future<String?> _egressViaProxy({required int timeout}) async {
+    for (final url in _myipURLs) {
+      final body = await _curlProxyNoKA(url, timeout: timeout);
+      if (body != null) {
+        try {
+          final m = jsonDecode(body);
+          final ip = (m is Map) ? m['ip'] : null;
+          if (ip is String && ip.trim().isNotEmpty) return ip.trim();
+        } catch (_) {}
+      }
+    }
+    final ip = await _curlProxyNoKA('https://api.ipify.org', timeout: timeout);
+    return (ip != null && ip.trim().isNotEmpty) ? ip.trim() : null;
+  }
+
+  /// §7.2 L4 liveness: generate_204 through the tunnel. True on 204/200.
+  Future<bool> _liveness204({required int timeout}) async {
+    try {
+      final r = await Process.run(_curl, [
+        '--max-time',        '$timeout',
+        '--connect-timeout', '${(timeout - 2).clamp(2, timeout)}',
+        '-s', '-o', _devNull, '-w', '%{http_code}',
+        '--no-keepalive',
+        '--proxy', 'http://127.0.0.1:$_proxyPort',
+        'https://www.gstatic.com/generate_204',
+      ]);
+      final code = int.tryParse(r.stdout.toString().trim()) ?? 0;
+      return code == 204 || code == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Test all outbounds in the main selector group sequentially (§7 contract).
+  /// Switches each outbound, settles routing, probes egress (§7.4 ok = egress != null)
+  /// and a generate_204 liveness signal (§7.2). On exit leaves the best working profile
+  /// active (so step 5/6 log through a live tunnel); restores original only if none worked.
   Future<List<Map<String, dynamic>>> _runProfilesFulltest(Set<String> knownIPs) async {
     final results = <Map<String, dynamic>>[];
 
@@ -317,27 +398,24 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
     final originalTag = sel.selected;
     _append('Selector: "$groupTag"  текущий: "$originalTag"');
 
-    // Extend known IPs with any IP-like hosts from OutboundInfo
-    final allIPs = {...knownIPs};
-    for (final item in sel.items) {
-      final h = item.host;
-      if (RegExp(r'^\d+\.\d+\.\d+\.\d+$').hasMatch(h)) allIPs.add(h);
-    }
-
     final testable = sel.items
         .where((i) => !_ftSkipTags.contains(i.tag) && !_ftSkipTypes.contains(i.type.toLowerCase()))
         .toList();
     _append('Профилей: ${testable.length}\n');
 
+    String? bestTag;       // best working profile → kept active for log phase (F1.1)
+    int? bestMs;
+
     try {
       for (final item in testable) {
         final tag = item.tag;
         final display = item.tagDisplay.isNotEmpty ? item.tagDisplay : tag;
+        final ttype = _transportType(tag);
+        final (timeout, retries) = _ftBudget(ttype);
         _append('    $display…');
 
         final switched = await coreService.selectOutbound(groupTag, tag).run();
-        final switchOk = switched.isRight();
-        if (!switchOk) {
+        if (!switched.isRight()) {
           _append('  ✗ $display  (switch failed)');
           results.add({'name': display, 'ok': 0});
           continue;
@@ -345,28 +423,48 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
 
         await Future.delayed(const Duration(milliseconds: 1800));
 
+        // §7.4 egress probe — success ends retries (only the failing profile pays).
         String? egressIp;
         int? tunnelMs;
-        for (var attempt = 1; attempt <= 2; attempt++) {
+        for (var attempt = 1; attempt <= retries; attempt++) {
           final t = DateTime.now();
-          egressIp = await _curlProxyNoKA('https://api.ipify.org', timeout: 18);
+          egressIp = await _egressViaProxy(timeout: timeout);
           if (egressIp != null) { tunnelMs = DateTime.now().difference(t).inMilliseconds; break; }
-          if (attempt < 2) await Future.delayed(const Duration(milliseconds: 500));
+          if (attempt < retries) await Future.delayed(const Duration(milliseconds: 500));
         }
 
-        final ok = egressIp != null && allIPs.contains(egressIp.trim());
+        // §7.4 verdict: any egress = tunnel carries traffic. Never compare with a single IP.
+        final ok = egressIp != null;
+        // §7.2 L4 liveness only on live profiles (dead ones never reach here).
+        final browserOk = ok && await _liveness204(timeout: timeout);
+        final known = ok && knownIPs.contains(egressIp);
+
         _append(ok
-            ? '  ✓ $display  ${egressIp!.trim()}  [${tunnelMs}ms]'
-            : '  ✗ $display  ${egressIp ?? "нет ответа"}');
+            ? '  ✓ $display  $egressIp  [${tunnelMs}ms]'
+              '${browserOk ? '  204✓' : '  204✗'}${known ? '' : '  (egress вне sub)'}'
+            : '  ✗ $display  нет ответа');
 
         final profile = <String, dynamic>{'name': display, 'ok': ok ? 1 : 0};
-        if (tunnelMs != null && ok) profile['latency_ms'] = tunnelMs;
+        if (egressIp != null) profile['egress_ip'] = egressIp;
+        if (tunnelMs != null) profile['latency_ms'] = tunnelMs;
+        profile['browser_ok'] = browserOk ? 1 : 0;
         results.add(profile);
+
+        if (ok && (bestMs == null || (tunnelMs ?? 1 << 30) < bestMs)) {
+          bestTag = tag;
+          bestMs = tunnelMs ?? (1 << 30);
+        }
       }
     } finally {
-      if (originalTag.isNotEmpty) {
-        await coreService.selectOutbound(groupTag, originalTag).run();
-        _append('\n↺ Восстановлен: "$originalTag"');
+      // F1.1 — keep the best working tunnel active for the checkin+log phase.
+      // If nothing worked, restore the user's original selection.
+      final restoreTag = bestTag ?? (originalTag.isNotEmpty ? originalTag : null);
+      if (restoreTag != null) {
+        await coreService.selectOutbound(groupTag, restoreTag).run();
+        await Future.delayed(const Duration(milliseconds: 800));
+        _append(bestTag != null
+            ? '\n✓ Активен рабочий профиль: "$bestTag"'
+            : '\n↺ Восстановлен: "$restoreTag"');
       }
     }
 
