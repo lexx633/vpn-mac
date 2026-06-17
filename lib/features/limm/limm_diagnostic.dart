@@ -28,6 +28,8 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:hiddify/core/directories/directories_provider.dart';
+import 'package:hiddify/features/connection/model/connection_status.dart';
+import 'package:hiddify/features/connection/notifier/connection_notifier.dart';
 import 'package:hiddify/features/limm/limm_checkin.dart';
 import 'package:hiddify/hiddifycore/generated/v2/hcore/hcore.pb.dart';
 import 'package:hiddify/hiddifycore/hiddify_core_service_provider.dart';
@@ -113,6 +115,32 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
     }
   }
 
+  // ── Auto-connect ─────────────────────────────────────────────────────────
+
+  /// Ensure VPN is connected before running the profile loop.
+  /// If disconnected, triggers connect and waits up to [timeoutSec] for Connected.
+  /// Returns true if connected (either was already or just connected).
+  Future<bool> _ensureConnected({int timeoutSec = 30}) async {
+    final status = ref.read(connectionNotifierProvider).valueOrNull;
+    if (status?.isConnected == true) return true;
+
+    // If already connecting — just wait.
+    if (status?.isSwitching != true) {
+      // Disconnected: trigger connect.
+      await ref.read(connectionNotifierProvider.notifier).toggleConnection();
+    }
+
+    // Poll until Connected or timeout.
+    final deadline = DateTime.now().add(Duration(seconds: timeoutSec));
+    while (DateTime.now().isBefore(deadline)) {
+      await Future.delayed(const Duration(milliseconds: 600));
+      final s = ref.read(connectionNotifierProvider).valueOrNull;
+      if (s?.isConnected == true) return true;
+      if (s?.isDisconnected == true) return false; // connect failed
+    }
+    return false;
+  }
+
   // §7.5 per-transport-type egress timeout/retry budget. Type derived from tag suffix.
   static String _transportType(String tag) {
     final t = tag.toLowerCase();
@@ -169,8 +197,20 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
           ? '⚠️  Список серверов недоступен (fallback к дефолтному IP)'
           : '✓ IP-адресов серверов: ${knownIPs.length}  (${knownIPs.join(", ")})');
 
-      // Step 3: test all outbounds sequentially
+      // Step 3: auto-connect if VPN is off, then test all outbounds
       _append('\n── Тест всех профилей ──');
+      final alreadyConnected = ref.read(connectionNotifierProvider).valueOrNull?.isConnected == true;
+      if (!alreadyConnected) {
+        _append('⚠️  VPN отключён — подключаюсь автоматически…');
+        final ok = await _ensureConnected(timeoutSec: 30);
+        if (ok) {
+          await Future.delayed(const Duration(seconds: 2)); // extra settle after connect
+          _append('✓ VPN подключён, начинаю тест');
+        } else {
+          _append('✗ Не удалось подключиться — тест прерван');
+          return;
+        }
+      }
       final profileResults = await _runProfilesFulltest(knownIPs);
 
       // Step 4: post all fulltest results
