@@ -9,6 +9,7 @@ import 'package:hiddify/features/profile/data/profile_data_mapper.dart';
 import 'package:hiddify/features/profile/data/profile_data_source.dart';
 import 'package:hiddify/features/profile/data/profile_parser.dart';
 import 'package:hiddify/features/profile/data/profile_path_resolver.dart';
+import 'package:hiddify/features/profile/utils/limm_config_patcher.dart';
 import 'package:hiddify/features/profile/model/profile_entity.dart';
 import 'package:hiddify/features/profile/model/profile_failure.dart';
 import 'package:hiddify/features/profile/model/profile_sort_enum.dart';
@@ -266,7 +267,15 @@ class ProfileRepositoryImpl with ExceptionHandler, InfraLogger implements Profil
                 .changeOptions(overridedOptions)
                 .mapLeft(ProfileFailure.invalidConfig)
                 .flatMap(
-                  (_) => _singbox.validateConfigByPath(path, tempPath, debug).mapLeft(ProfileFailure.invalidConfig),
+                  (_) => _singbox
+                      .validateConfigByPath(path, tempPath, debug)
+                      .mapLeft(ProfileFailure.invalidConfig)
+                      .flatMap(
+                        (_) => TaskEither.tryCatch(
+                          () => LimmConfigPatcher.patchFile(path),
+                          ProfileFailure.unexpected,
+                        ),
+                      ),
                 ),
           );
 
