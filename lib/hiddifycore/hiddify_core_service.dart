@@ -328,13 +328,14 @@ class HiddifyCoreService with InfraLogger {
     }
   }
 
-  TaskEither<String, Unit> selectOutbound(String groupTag, String outboundTag) {
+  TaskEither<String, Unit> selectOutbound(String groupTag, String outboundTag,
+      {Duration timeout = const Duration(seconds: 1)}) {
     return TaskEither(() async {
       loggy.debug("selecting outbound");
       try {
         final res = await core.bgClient.selectOutbound(
           SelectOutboundRequest(groupTag: groupTag, outboundTag: outboundTag),
-          options: CallOptions(timeout: const Duration(seconds: 1)),
+          options: CallOptions(timeout: timeout),
         );
         if (res.code != ResponseCode.OK) return left("${res.code} ${res.message}");
 

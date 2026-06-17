@@ -425,11 +425,17 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
         final (timeout, retries) = _ftBudget(ttype);
         _append('    $display…');
 
-        final switched = await coreService.selectOutbound(groupTag, tag).run();
-        if (!switched.isRight()) {
-          _append('  ✗ $display  (switch failed)');
-          results.add({'name': display, 'ok': 0});
-          continue;
+        // selectOutbound gRPC has a short deadline and RETHROWS on timeout — a real
+        // outbound switch can exceed 1s, so use a 5s deadline AND catch any throw so one
+        // slow/failed switch never kills the whole loop (the bug: only the pre-selected
+        // profile got tested because iteration 2's switch timed out and threw).
+        try {
+          await coreService
+              .selectOutbound(groupTag, tag, timeout: const Duration(seconds: 5))
+              .run();
+        } catch (_) {
+          // gRPC deadline exceeded — the switch may still apply; proceed and let the
+          // egress probe be the source of truth.
         }
 
         await Future.delayed(const Duration(milliseconds: 1800));
@@ -471,7 +477,11 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
       // If nothing worked, restore the user's original selection.
       final restoreTag = bestTag ?? (originalTag.isNotEmpty ? originalTag : null);
       if (restoreTag != null) {
-        await coreService.selectOutbound(groupTag, restoreTag).run();
+        try {
+          await coreService
+              .selectOutbound(groupTag, restoreTag, timeout: const Duration(seconds: 5))
+              .run();
+        } catch (_) {}
         await Future.delayed(const Duration(milliseconds: 800));
         _append(bestTag != null
             ? '\n✓ Активен рабочий профиль: "$bestTag"'
