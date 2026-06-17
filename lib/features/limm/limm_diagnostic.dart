@@ -27,6 +27,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:hiddify/core/directories/directories_provider.dart';
 import 'package:hiddify/features/limm/limm_checkin.dart';
 import 'package:hiddify/hiddifycore/generated/v2/hcore/hcore.pb.dart';
 import 'package:hiddify/hiddifycore/hiddify_core_service_provider.dart';
@@ -63,10 +64,54 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
   ];
 
   /// curl executable: absolute path on macOS/Linux, via PATH on Windows.
+  /// Not used on Android (no curl binary) — replaced by Dart HttpClient.
   static String get _curl => Platform.isWindows ? 'curl' : '/usr/bin/curl';
 
   /// Null device for curl -o (discard body).
   static String get _devNull => Platform.isWindows ? 'NUL' : '/dev/null';
+
+  /// HTTP GET through the Hiddify local proxy using pure Dart HttpClient.
+  /// Used on Android where there is no curl binary.
+  Future<String?> _dartProxyGet(String url, {int timeout = 18}) async {
+    try {
+      final uri = Uri.parse(url);
+      final client = HttpClient();
+      client.findProxy = (_) => 'PROXY 127.0.0.1:$_proxyPort';
+      client.connectionTimeout = Duration(seconds: (timeout - 2).clamp(2, timeout));
+      final req = await client.getUrl(uri).timeout(Duration(seconds: timeout));
+      req.headers.set('connection', 'close');
+      final resp = await req.close().timeout(Duration(seconds: timeout));
+      final body = await resp.transform(utf8.decoder).join().timeout(Duration(seconds: timeout));
+      client.close();
+      return body.trim().isEmpty ? null : body.trim();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 204-liveness probe through the proxy using Dart HttpClient.
+  /// Returns elapsed ms on 204/200, null otherwise.
+  Future<int?> _dartProbe204({required int timeout}) async {
+    try {
+      final t0 = DateTime.now();
+      final client = HttpClient();
+      client.findProxy = (_) => 'PROXY 127.0.0.1:$_proxyPort';
+      client.connectionTimeout = Duration(seconds: (timeout - 2).clamp(2, timeout));
+      final req = await client
+          .getUrl(Uri.parse('https://www.gstatic.com/generate_204'))
+          .timeout(Duration(seconds: timeout));
+      req.headers.set('connection', 'close');
+      final resp = await req.close().timeout(Duration(seconds: timeout));
+      // drain body
+      await resp.drain<void>().timeout(Duration(seconds: timeout));
+      if (resp.statusCode == 204 || resp.statusCode == 200) {
+        return DateTime.now().difference(t0).inMilliseconds;
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
 
   // §7.5 per-transport-type egress timeout/retry budget. Type derived from tag suffix.
   static String _transportType(String tag) {
@@ -303,9 +348,11 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
     return (code == 200, '$code $body');
   }
 
-  /// Curl through Hiddify proxy with --no-keepalive so each call uses a fresh connection.
+  /// GET through Hiddify proxy with no keepalive so each call uses a fresh connection.
   /// Critical for switching outbounds: keepalive would reuse the old tunnel.
+  /// On Android uses Dart HttpClient (no curl binary); on desktop uses curl.
   Future<String?> _curlProxyNoKA(String url, {int timeout = 18}) async {
+    if (Platform.isAndroid) return _dartProxyGet(url, timeout: timeout);
     try {
       final r = await Process.run(_curl, [
         '--max-time',        '$timeout',
@@ -363,9 +410,10 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
   }
 
   /// §7.2 L4 liveness: generate_204 through the tunnel. Returns elapsed ms on 204/200,
-  /// null otherwise. Uses http_code (not body) — generate_204 has an empty body by design,
-  /// so a body-based check would always read it as a failure.
+  /// null otherwise.
+  /// On Android uses Dart HttpClient (_dartProbe204); on desktop uses curl.
   Future<int?> _probe204({required int timeout}) async {
+    if (Platform.isAndroid) return _dartProbe204(timeout: timeout);
     try {
       final t0 = DateTime.now();
       final r = await Process.run(_curl, [
@@ -403,7 +451,16 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
     String originalTag = '';
     var testable = <String>[];
     try {
-      final dir = await getApplicationSupportDirectory();
+      // On Android the core working dir is getExternalStorageDirectory(), not
+      // getApplicationSupportDirectory(). Use the app's Directories provider to
+      // get the correct path regardless of platform.
+      final Directory dir;
+      if (Platform.isAndroid) {
+        final dirs = await ref.read(appDirectoriesProvider.future);
+        dir = dirs.workingDir;
+      } else {
+        dir = await getApplicationSupportDirectory();
+      }
       final cfg = jsonDecode(
           await File('${dir.path}/data/current-config.json').readAsString()) as Map<String, dynamic>;
       final obs = (cfg['outbounds'] as List).cast<Map<String, dynamic>>();
