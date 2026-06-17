@@ -1,16 +1,15 @@
 // limm_diagnostic.dart — Full Test + Status Checkin page.
 // Accessible from the app's menu / navigation.
 //
-// Full Test steps:
-//   1. Check-in without VPN (L0/L1 direct probes only)
-//   2. Measure L1 direct RTT to VPN server (3 probes, avg)
-//   3. Test current profile: egress IP, tunnel latency, service checks
-//   4. Post-test checkin with all measured data → updates limm.space/stat dashboard
-//   5. POST /api/fulltest with profile result
+// Full Test steps (tests ALL outbounds from the selector group):
+//   1. Baseline checkin (overrideVpnOn=false)
+//   2. Fetch known server IPs from subscription
+//   3. Iterate all outbounds: selectOutbound → wait 1.8s → egress IP via proxy → ok?
+//   4. POST /api/fulltest with all profile results
+//   5. Final checkin (VPN on if any profile passed, off otherwise)
 //   6. Send diagnostic log
 //
-// Row 1 Ping (latency_ms): direct TCP RTT to VPN server (no tunnel, L1 probe)
-// Row 2 Ping (tunnel_ms): RTT through VPN tunnel (gstatic generate_204)
+// Status Checkin: L1 direct TCP ping + tunnel latency (gstatic) → POST /api/checkin.
 //
 // Buttons:
 //   [Full Test]  [Send Diagnostic Log]  [Status Checkin]
@@ -20,7 +19,8 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:hiddify/features/limm/limm_checkin.dart';
-import 'package:hiddify/features/profile/notifier/active_profile_notifier.dart';
+import 'package:hiddify/hiddifycore/generated/v2/hcore/hcore.pb.dart';
+import 'package:hiddify/hiddifycore/hiddify_core_service_provider.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 
 class LimmDiagnosticPage extends ConsumerStatefulWidget {
@@ -65,178 +65,70 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
     if (_busy) return;
     setState(() { _testRunning = true; _log.clear(); });
     try {
-    final globalStart = DateTime.now();
-    _append('── Full Test начат ${_ts()} ──\n');
+      final globalStart = DateTime.now();
+      _append('── Full Test начат ${_ts()} ──\n');
 
-    // Step 1: checkin without VPN (L0/L1 baseline)
-    _append('⏳ Чекин (без VPN)…');
-    final t1 = DateTime.now();
-    final (c1, m1) = await LimmCheckin.shared.perform(overrideVpnOn: false);
-    final ms1 = DateTime.now().difference(t1).inMilliseconds;
-    _append(c1 == 200
-        ? '✓ Чекин (без VPN)  (ok $c1)  [${ms1}ms]'
-        : '✗ Чекин (без VPN)  (fail $c1 $m1)  [${ms1}ms]');
+      // Step 1: baseline checkin without VPN
+      _append('⏳ Чекин (без VPN)…');
+      final t1 = DateTime.now();
+      final (c1, m1) = await LimmCheckin.shared.perform(overrideVpnOn: false);
+      final ms1 = DateTime.now().difference(t1).inMilliseconds;
+      _append(c1 == 200
+          ? '✓ Чекин (без VPN)  (ok $c1)  [${ms1}ms]'
+          : '✗ Чекин (без VPN)  (fail $c1 $m1)  [${ms1}ms]');
 
-    // Step 2: measure L1 RTT — direct TCP to VPN server (3 probes avg, bypasses proxy/TUN)
-    _append('\n⏳ Пинг прямой (TCP до VPN-сервера, 3 пробы)…');
-    final l1samples = <int>[];
-    for (var i = 0; i < 3; i++) {
-      final ms = await _tcpPing(_serverIP, _serverPort);
-      if (ms != null) l1samples.add(ms);
-    }
-    final l1 = l1samples.isNotEmpty ? 1 : 0;
-    final latencyMs = l1samples.isNotEmpty
-        ? l1samples.reduce((a, b) => a + b) ~/ l1samples.length
-        : 0;
-    _append(l1 == 1
-        ? '✓ Пинг прямой  ${latencyMs}ms  (среднее ${l1samples.length}/3 проб)'
-        : '✗ Пинг прямой  недоступен (ISP блок или сервер упал)');
+      // Step 2: fetch known server IPs from sub
+      _append('\n⏳ Получаю список серверов из подписки…');
+      final knownIPs = await LimmCheckin.shared.fetchKnownServerIPs();
+      _append(knownIPs.isEmpty
+          ? '⚠️  Список серверов недоступен (fallback к дефолтному IP)'
+          : '✓ IP-адресов серверов: ${knownIPs.length}  (${knownIPs.join(", ")})');
 
-    // Step 3: test current profile through proxy
-    _append('\n── Текущий профиль ──\n');
+      // Step 3: test all outbounds sequentially
+      _append('\n── Тест всех профилей ──');
+      final profileResults = await _runProfilesFulltest(knownIPs);
 
-    // 3a: egress IP — up to 3 attempts (XHTTP may time out on first request)
-    _append('⏳ Egress IP (api.ipify.org)…');
-    final t3a = DateTime.now();
-    String? ip;
-    for (var attempt = 1; attempt <= 3; attempt++) {
-      ip = await _curlProxy('https://api.ipify.org', timeout: 20);
-      if (ip != null) break;
-      if (attempt < 3) {
-        _append('    ↻  попытка ${attempt + 1}/3…');
-        await Future.delayed(const Duration(milliseconds: 500));
-      }
-    }
-    final ms3a = DateTime.now().difference(t3a).inMilliseconds;
-    final egressIp = ip?.trim() ?? '';
-    final l4 = egressIp == _serverIP ? 1 : 0;
-
-    if (egressIp.isNotEmpty) {
-      _append(l4 == 1
-          ? '✓ Egress IP  $egressIp  = VPN ✓  [${ms3a}ms]'
-          : '✗ Egress IP  $egressIp  ≠ VPN  [${ms3a}ms]');
-    } else {
-      _append('✗ Egress IP  (нет ответа)  [${ms3a}ms]');
-    }
-
-    // 3b: tunnel latency (gstatic generate_204 through proxy, 3 probes avg)
-    int? tunnelMs;
-    if (egressIp.isNotEmpty) {
-      _append('⏳ Пинг туннель (gstatic, 3 пробы)…');
-      final tunSamples = <int>[];
-      for (var i = 0; i < 3; i++) {
-        final tTun = DateTime.now();
-        final tOk = await _curlProxy('https://www.gstatic.com/generate_204', timeout: 8);
-        if (tOk != null) tunSamples.add(DateTime.now().difference(tTun).inMilliseconds);
-      }
-      if (tunSamples.isNotEmpty) {
-        tunnelMs = tunSamples.reduce((a, b) => a + b) ~/ tunSamples.length;
-        _append('✓ Пинг туннель  ${tunnelMs}ms  (среднее ${tunSamples.length}/3 проб)');
-      } else {
-        _append('✗ Пинг туннель  (нет ответа)');
+      // Step 4: post all fulltest results
+      if (profileResults.isNotEmpty) {
+        await LimmCheckin.shared.postAllFulltestResults(profileResults);
+        final okCount = profileResults.where((r) => r['ok'] == 1).length;
+        _append('\n✓ Результаты отправлены: $okCount/${profileResults.length} профилей работают');
       }
 
-      // 3c: service checks (parallel)
-      _append('⏳ Сервисы (Telegram / Google / ChatGPT)…');
-      final svcResults = await Future.wait([
-        _probeService('https://web.telegram.org/'),
-        _probeService('https://www.google.com/search?q=test'),
-        _probeService('https://chatgpt.com/'),
-      ]);
-      final tg    = svcResults[0];
-      final ggl   = svcResults[1];
-      final chgpt = svcResults[2];
-
-      final tgIcon    = tg    == 'ok' ? '✓' : '✗';
-      final gglIcon   = ggl   == 'ok' ? '✓' : '✗';
-      final chgptIcon = chgpt == 'ok' ? '✓' : '✗';
-      _append('$tgIcon Telegram=$tg  $gglIcon Google=$ggl  $chgptIcon ChatGPT=$chgpt');
-
-      // Step 4: post-test checkin with full measured data
-      _append('\n⏳ Чекин (VPN on, с данными)…');
-      final t4 = DateTime.now();
-      final (c4, _) = await LimmCheckin.shared.performPostTest(
-        l0: 1, l1: l1, l4: l4,
-        egressIp: egressIp,
-        latencyMs: latencyMs > 0 ? latencyMs : null,
-        tunnelMs: tunnelMs,
-        tgStatus: tg, gglStatus: ggl, chgptStatus: chgpt,
-      );
-      final ms4 = DateTime.now().difference(t4).inMilliseconds;
-      _append(c4 == 200
-          ? '✓ Чекин (VPN on)  (ok $c4)  [${ms4}ms]'
-          : '✗ Чекин (VPN on)  (fail $c4)  [${ms4}ms]');
-
-      // Step 5: POST /api/fulltest with profile result
-      await LimmCheckin.shared.postFulltestResult(
-        profileName: _activeProfileName(),
-        ok: l4 == 1,
-        latencyMs: tunnelMs,
-      );
-    } else {
-      // Egress IP check failed — probe tunnel latency + services if proxy is up
-      final vpnOn = await LimmCheckin.shared.vpnAvailable();
-      int? tunnelMsFailed;
-      String tgF = 'down', gglF = 'down', chgptF = 'down';
-      if (vpnOn) {
-        // Tunnel latency even though egress IP is wrong/missing
-        final tTun = DateTime.now();
-        final tOk = await _curlProxy('https://www.gstatic.com/generate_204', timeout: 8);
-        if (tOk != null) {
-          tunnelMsFailed = DateTime.now().difference(tTun).inMilliseconds;
-          _append('⏳ Пинг туннель (при сбое egress)  ${tunnelMsFailed}ms');
-        }
-        // Services
-        final svcResults = await Future.wait([
-          _probeService('https://web.telegram.org/'),
-          _probeService('https://www.google.com/search?q=test'),
-          _probeService('https://chatgpt.com/'),
-        ]);
-        tgF = svcResults[0]; gglF = svcResults[1]; chgptF = svcResults[2];
-        _append('Сервисы: Telegram=$tgF  Google=$gglF  ChatGPT=$chgptF');
-      }
-
-      // Post checkin: vpn_running=1 (proxy up) or vpn_running=0 (proxy down)
-      _append('\n⏳ Чекин (результат теста)…');
-      final int cN; final String mN;
-      if (vpnOn) {
-        (cN, mN) = await LimmCheckin.shared.performPostTest(
-          l0: 1, l1: l1, l4: 0,
-          latencyMs: latencyMs > 0 ? latencyMs : null,
-          tunnelMs: tunnelMsFailed,
-          tgStatus: tgF, gglStatus: gglF, chgptStatus: chgptF,
+      // Step 5: post-test checkin based on overall result
+      final anyOk = profileResults.any((r) => r['ok'] == 1);
+      _append('\n⏳ Чекин (итог)…');
+      final bestTunnelMs = profileResults
+          .where((r) => r['ok'] == 1 && r.containsKey('latency_ms'))
+          .map<int>((r) => r['latency_ms'] as int)
+          .fold<int?>(null, (best, ms) => best == null || ms < best ? ms : best);
+      int cFinal; String mFinal;
+      if (anyOk) {
+        (cFinal, mFinal) = await LimmCheckin.shared.performPostTest(
+          l0: 1, l1: 1, l4: 1, tunnelMs: bestTunnelMs,
         );
       } else {
-        (cN, mN) = await LimmCheckin.shared.perform(overrideVpnOn: false);
+        (cFinal, mFinal) = await LimmCheckin.shared.perform(overrideVpnOn: false);
       }
-      _append(cN == 200
-          ? '✓ Чекин отправлен  (ok $cN)'
-          : '✗ Чекин  (fail $cN  $mN)');
+      _append(cFinal == 200
+          ? '✓ Чекин отправлен  (ok $cFinal)'
+          : '✗ Чекин  (fail $cFinal  $mFinal)');
 
-      // Always post fulltest result so Profiles column is updated
-      await LimmCheckin.shared.postFulltestResult(
-        profileName: _activeProfileName(),
-        ok: false,
-      );
-    }
+      // Step 6: send diagnostic log
+      _append('\n⏳ Отправка диагностического лога…');
+      final t6 = DateTime.now();
+      final (logOk, logMsg) = await _sendLog();
+      final ms6 = DateTime.now().difference(t6).inMilliseconds;
+      _append(logOk
+          ? '✓ Лог отправлен  ($logMsg)  [${ms6}ms]'
+          : '✗ Лог  ($logMsg)  [${ms6}ms]');
 
-    // Step 6: send diagnostic log
-    _append('\n⏳ Отправка диагностического лога…');
-    final t6 = DateTime.now();
-    final (logOk, logMsg) = await _sendLog();
-    final ms6 = DateTime.now().difference(t6).inMilliseconds;
-    _append(logOk
-        ? '✓ Лог отправлен  ($logMsg)  [${ms6}ms]'
-        : '✗ Лог отправлен  ($logMsg)  [${ms6}ms]');
-
-    final total = DateTime.now().difference(globalStart).inSeconds;
-    // tunnelMs != null means gstatic probe through tunnel succeeded — tunnel alive
-    // even if ipify (l4) flaked; avoids false "✗ Есть ошибки" on healthy connections
-    final success = l4 == 1 || tunnelMs != null;
-    _append('\n─────────────────────────────────────');
-    _append(success ? '✓ OK  [всего ${total}s]' : '✗ Есть ошибки  [всего ${total}s]');
-    _append('── Full Test завершён ${_ts()} ──');
-
+      final total = DateTime.now().difference(globalStart).inSeconds;
+      _append('\n─────────────────────────────────────');
+      _append(anyOk
+          ? '✓ OK — хотя бы один профиль работает  [всего ${total}s]'
+          : '✗ Все профили не прошли тест  [всего ${total}s]');
+      _append('── Full Test завершён ${_ts()} ──');
     } finally {
       setState(() => _testRunning = false);
     }
@@ -359,22 +251,6 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
     }
   }
 
-  /// Direct curl bypassing TUN via --noproxy '*'.
-  Future<bool> _curlDirect(String url, {int timeout = 5}) async {
-    try {
-      final r = await Process.run(_curl, [
-        '--max-time',      '$timeout',
-        '--connect-timeout', '${(timeout - 1).clamp(1, timeout)}',
-        '-s', '-o', '/dev/null',
-        '--noproxy', '*',
-        url,
-      ]);
-      return r.exitCode == 0 || r.exitCode == 52 || r.exitCode == 35 || r.exitCode == 56;
-    } catch (_) {
-      return false;
-    }
-  }
-
   /// HTTP request through Hiddify HTTP proxy.
   Future<String?> _curlProxy(String url, {int timeout = 15}) async {
     try {
@@ -392,37 +268,109 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
     }
   }
 
-  /// HTTP status probe through proxy. Returns "ok" / "blocked" / "down".
-  Future<String> _probeService(String url) async {
-    try {
-      final r = await Process.run(_curl, [
-        '--max-time',        '12',
-        '--connect-timeout', '10',
-        '-s', '-o', '/dev/null', '-w', '%{http_code}',
-        '--proxy', 'http://127.0.0.1:$_proxyPort',
-        url,
-      ]);
-      final code = int.tryParse(r.stdout.toString().trim()) ?? 0;
-      if (code == 0)   return 'down';
-      if (code == 451) return 'blocked';
-      return 'ok';
-    } catch (_) {
-      return 'down';
-    }
-  }
-
   Future<(bool, String)> _sendLog() async {
     final (code, body) = await LimmCheckin.shared.sendLog();
     return (code == 200, '$code $body');
   }
 
-  /// Returns the active Hiddify profile name (subscription name), or 'текущий' fallback.
-  String _activeProfileName() {
+  /// Curl through Hiddify proxy with --no-keepalive so each call uses a fresh connection.
+  /// Critical for switching outbounds: keepalive would reuse the old tunnel.
+  Future<String?> _curlProxyNoKA(String url, {int timeout = 18}) async {
     try {
-      final profile = ref.read(activeProfileProvider).valueOrNull;
-      if (profile != null && profile.name.isNotEmpty) return profile.name;
-    } catch (_) {}
-    return 'текущий';
+      final r = await Process.run(_curl, [
+        '--max-time',        '$timeout',
+        '--connect-timeout', '${(timeout - 2).clamp(2, timeout)}',
+        '-s', '--no-keepalive',
+        '--proxy', 'http://127.0.0.1:$_proxyPort',
+        url,
+      ]);
+      final out = r.stdout.toString().trim();
+      return out.isEmpty ? null : out;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static const _ftSkipTags  = {'direct', 'block', 'dns-out', 'GLOBAL', 'REJECT'};
+  static const _ftSkipTypes = {'selector', 'urltest', 'dns', 'block', 'direct'};
+
+  /// Test all outbounds in the main selector group sequentially.
+  /// Switches each outbound, waits for routing to settle, tests egress IP.
+  /// Restores the original selection on exit (success or error).
+  Future<List<Map<String, dynamic>>> _runProfilesFulltest(Set<String> knownIPs) async {
+    final results = <Map<String, dynamic>>[];
+
+    final coreService = ref.read(hiddifyCoreServiceProvider);
+    final groups = coreService.latest;
+
+    // Find the main selector group (selectable == true)
+    OutboundGroup? sel;
+    for (final g in groups) {
+      if (g.type.toLowerCase() == 'selector' && g.selectable) { sel = g; break; }
+    }
+    if (sel == null) {
+      _append('⚠️  Selector group не найден — нет профилей для теста');
+      return results;
+    }
+
+    final groupTag = sel.tag;
+    final originalTag = sel.selected;
+    _append('Selector: "$groupTag"  текущий: "$originalTag"');
+
+    // Extend known IPs with any IP-like hosts from OutboundInfo
+    final allIPs = {...knownIPs};
+    for (final item in sel.items) {
+      final h = item.host;
+      if (RegExp(r'^\d+\.\d+\.\d+\.\d+$').hasMatch(h)) allIPs.add(h);
+    }
+
+    final testable = sel.items
+        .where((i) => !_ftSkipTags.contains(i.tag) && !_ftSkipTypes.contains(i.type.toLowerCase()))
+        .toList();
+    _append('Профилей: ${testable.length}\n');
+
+    try {
+      for (final item in testable) {
+        final tag = item.tag;
+        final display = item.tagDisplay.isNotEmpty ? item.tagDisplay : tag;
+        _append('    $display…');
+
+        final switched = await coreService.selectOutbound(groupTag, tag).run();
+        final switchOk = switched.isRight();
+        if (!switchOk) {
+          _append('  ✗ $display  (switch failed)');
+          results.add({'name': display, 'ok': 0});
+          continue;
+        }
+
+        await Future.delayed(const Duration(milliseconds: 1800));
+
+        String? egressIp;
+        int? tunnelMs;
+        for (var attempt = 1; attempt <= 2; attempt++) {
+          final t = DateTime.now();
+          egressIp = await _curlProxyNoKA('https://api.ipify.org', timeout: 18);
+          if (egressIp != null) { tunnelMs = DateTime.now().difference(t).inMilliseconds; break; }
+          if (attempt < 2) await Future.delayed(const Duration(milliseconds: 500));
+        }
+
+        final ok = egressIp != null && allIPs.contains(egressIp.trim());
+        _append(ok
+            ? '  ✓ $display  ${egressIp!.trim()}  [${tunnelMs}ms]'
+            : '  ✗ $display  ${egressIp ?? "нет ответа"}');
+
+        final profile = <String, dynamic>{'name': display, 'ok': ok ? 1 : 0};
+        if (tunnelMs != null && ok) profile['latency_ms'] = tunnelMs;
+        results.add(profile);
+      }
+    } finally {
+      if (originalTag.isNotEmpty) {
+        await coreService.selectOutbound(groupTag, originalTag).run();
+        _append('\n↺ Восстановлен: "$originalTag"');
+      }
+    }
+
+    return results;
   }
 
   String _ts() {

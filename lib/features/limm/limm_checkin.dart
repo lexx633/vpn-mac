@@ -22,6 +22,8 @@ class LimmCheckin {
 
   Timer? _timer;
   String? _cachedAppVersion;
+  Set<String>? _cachedServerIPs;
+  DateTime? _cachedServerIPsAt;
 
   // ── Constants ─────────────────────────────────────────────────────────────
   static const _apiBase   = 'https://limm.space/api';
@@ -30,9 +32,16 @@ class LimmCheckin {
   static const _buildSha  = String.fromEnvironment('LIMM_BUILD_SHA', defaultValue: 'dev');
   static String get _clientKind => Platform.isMacOS ? 'macos-hiddify' : 'windows-hiddify';
   static const _clientLabel = 'pc hid';
-  static const _serverIP   = '45.95.175.170';
+  static const _serverIP   = '45.95.175.170'; // fallback / L1 probe target
   static const _serverPort = 443;            // VPN server port for L1 TCP probe
   static const _proxyPort  = 12334;          // Hiddify mixed-port (HTTP)
+
+  // Sub URLs in priority order (direct www first, then Bunny CDN, then CF).
+  static const _subURLs = [
+    'https://www.limm.space/vpn/sub',
+    'https://vpn.limm.space/vpn/sub',
+    'https://limm.space/vpn/sub',
+  ];
 
   /// curl executable: on Windows it lives in System32 and is found via PATH;
   /// on macOS/Linux use the absolute path (sandboxed apps may have a minimal PATH).
@@ -50,6 +59,64 @@ class LimmCheckin {
       _cachedAppVersion = 'hiddify+$_buildSha';
     }
     return _cachedAppVersion!;
+  }
+
+  // ── Sub IP cache ──────────────────────────────────────────────────────────
+
+  /// Fetch sub from the server and parse all server IPs from it.
+  /// Tries each mirror URL in order; returns empty set on complete failure.
+  Future<Set<String>> _fetchSubIPs() async {
+    for (final url in _subURLs) {
+      try {
+        final r = await Process.run(_curl, [
+          '--max-time', '10', '--connect-timeout', '6',
+          '-s', '--noproxy', '*',
+          '-H', 'Authorization: Bearer $_token',
+          url,
+        ]);
+        if (r.exitCode != 0) continue;
+        final ips = _parseIPsFromSub(r.stdout.toString());
+        if (ips.isNotEmpty) return ips;
+      } catch (_) {}
+    }
+    return {};
+  }
+
+  Set<String> _parseIPsFromSub(String body) {
+    final ips = <String>{};
+    String decoded = body.trim();
+    try {
+      final compact = decoded.replaceAll('\n', '').replaceAll('\r', '');
+      decoded = utf8.decode(base64.decode(compact));
+    } catch (_) {} // already plain text
+    for (final line in decoded.split('\n')) {
+      final l = line.trim();
+      if (l.isEmpty) continue;
+      try {
+        final uri = Uri.parse(l);
+        if (uri.host.isNotEmpty) ips.add(uri.host);
+      } catch (_) {}
+    }
+    return ips;
+  }
+
+  /// Public access to the server IPs set (for use in limm_diagnostic.dart).
+  Future<Set<String>> fetchKnownServerIPs() => _knownServerIPs();
+
+  /// Returns the set of known server IPs, fetched from sub and cached for 30 min.
+  /// Falls back to {_serverIP} if the sub is unreachable.
+  Future<Set<String>> _knownServerIPs() async {
+    if (_cachedServerIPs != null && _cachedServerIPsAt != null &&
+        DateTime.now().difference(_cachedServerIPsAt!) < const Duration(minutes: 30)) {
+      return _cachedServerIPs!;
+    }
+    final ips = await _fetchSubIPs();
+    if (ips.isNotEmpty) {
+      _cachedServerIPs = ips;
+      _cachedServerIPsAt = DateTime.now();
+      return ips;
+    }
+    return {_serverIP};
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -147,12 +214,13 @@ class LimmCheckin {
       l2 = l2body != null ? 1 : 0;
       l3 = l2;
 
-      // L4: egress IP through tunnel
+      // L4: egress IP through tunnel — compare against all known node IPs from sub
       final ip = await _curlProxy('https://api.ipify.org',
           port: _proxyPort, timeout: 15);
       if (ip != null && ip.isNotEmpty) {
         egressIp = ip.trim();
-        l4 = egressIp == _serverIP ? 1 : 0;
+        final serverIPs = await _knownServerIPs();
+        l4 = serverIPs.contains(egressIp) ? 1 : 0;
       }
 
       // Tunnel latency (gstatic generate_204 through proxy, 3 probes avg)
@@ -360,6 +428,27 @@ class LimmCheckin {
           'kind': _clientKind,
           'profiles': [profile],
         }));
+        await req.close();
+      } finally {
+        client.close();
+      }
+    } catch (_) {}
+  }
+
+  /// POST all profile Full Test results in one call to /api/fulltest.
+  /// [profiles] — list of {name, ok, latency_ms?} maps.
+  Future<void> postAllFulltestResults(List<Map<String, dynamic>> profiles) async {
+    if (_token.isEmpty || profiles.isEmpty) return;
+    final uid = await _uid;
+    try {
+      final client = HttpClient()
+        ..connectionTimeout = const Duration(seconds: 10);
+      try {
+        final req = await client.postUrl(Uri.parse('$_apiBase/fulltest'));
+        req.headers
+          ..contentType = ContentType.json
+          ..add('Authorization', 'Bearer $_token');
+        req.write(jsonEncode({'client_uid': uid, 'kind': _clientKind, 'profiles': profiles}));
         await req.close();
       } finally {
         client.close();
