@@ -162,6 +162,35 @@ jobs:
             --dart-define=LIMM_TOKEN=${{ secrets.LIMM_TOKEN }} \
             --dart-define=LIMM_BUILD_SHA=${{ env.SHORT_SHA }}
 
+      - name: Code-sign Windows binaries
+        shell: pwsh
+        env:
+          WIN_CERT_PFX_BASE64: ${{ secrets.WIN_CERT_PFX_BASE64 }}
+          WIN_CERT_PASSWORD: ${{ secrets.WIN_CERT_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WIN_CERT_PFX_BASE64)) {
+            Write-Host "WIN_CERT_PFX_BASE64 secret not set — skipping code signing (build stays unsigned)."
+            exit 0
+          }
+          $releaseDir = "build\windows\x64\runner\Release"
+          $pfx = "$env:RUNNER_TEMP\codesign.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WIN_CERT_PFX_BASE64))
+          # Resolve signtool from the installed Windows SDK (newest x64).
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $signtool) { throw "signtool.exe not found" }
+          Write-Host "signtool: $signtool"
+          # Sign every PE we ship (exe + dlls), incl. the Go hiddify-core.dll — unsigned Go
+          # binaries are the main Defender ML false-positive trigger.
+          $targets = Get-ChildItem $releaseDir -Recurse -Include *.exe,*.dll
+          foreach ($t in $targets) {
+            & $signtool sign /fd SHA256 /f $pfx /p $env:WIN_CERT_PASSWORD `
+              /tr http://timestamp.digicert.com /td SHA256 $t.FullName
+            if ($LASTEXITCODE -ne 0) { throw "signtool failed on $($t.Name)" }
+          }
+          Remove-Item $pfx -Force
+          Write-Host "Signed $($targets.Count) binaries."
+
       - name: Create ZIP
         shell: pwsh
         run: |
