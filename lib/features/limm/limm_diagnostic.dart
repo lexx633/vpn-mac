@@ -428,6 +428,20 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
         .toList();
     _append('Профилей: ${testable.length}\n');
 
+    // TEMP DEBUG (remove after diagnosis): dump the real group structure into the payload
+    // so it shows up in monitor.db — the loop keeps producing only 1 profile and the source
+    // of the list needs to be seen at runtime.
+    results.add({
+      'name': 'DBG',
+      'ok': 0,
+      'groups_n': groups.length,
+      'groups': groups.map((g) => '${g.tag}/${g.type}/sel=${g.selectable}/n=${g.items.length}').join(' | '),
+      'sel_tag': groupTag,
+      'sel_items': sel.items.length,
+      'testable': testable.length,
+      'item_tags': testable.map((i) => '${i.tag}(${i.type})').join(','),
+    });
+
     String? bestTag;       // best working profile → kept active for log phase (F1.1)
     int? bestMs;
 
