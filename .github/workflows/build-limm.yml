@@ -124,6 +124,98 @@ jobs:
           path: ${{ env.DMG_NAME }}
           retention-days: 7
 
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2.21.0
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Set version
+        run: |
+          BASE_VER=$(grep '^version:' pubspec.yaml | sed 's/version: *//; s/+.*//')
+          VERSION="${BASE_VER}.${{ github.run_number }}"
+          echo "BASE_VER=$BASE_VER" >> $GITHUB_ENV
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+
+      - name: Prepare (download core)
+        run: make android-prepare
+
+      - name: Setup signing keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/limm-hiddify-release.jks
+            cat > android/key.properties <<EOF
+          storePassword=${ANDROID_STORE_PASSWORD}
+          keyPassword=${ANDROID_KEY_PASSWORD}
+          keyAlias=${ANDROID_KEY_ALIAS}
+          storeFile=../limm-hiddify-release.jks
+          EOF
+            echo "Keystore configured."
+          else
+            echo "No keystore — will use debug signing."
+          fi
+
+      - name: Build Android APK
+        run: |
+          flutter build apk --release \
+            --build-name=${{ env.BASE_VER }} \
+            --build-number=${{ github.run_number }} \
+            --dart-define=LIMM_TOKEN=${{ secrets.LIMM_TOKEN }} \
+            --dart-define=LIMM_BUILD_SHA=${{ env.SHORT_SHA }} \
+            --target-platform android-arm64
+          ls -lh build/app/outputs/flutter-apk/
+
+      - name: Deploy to limm.space
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$DEPLOY_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          APK=build/app/outputs/flutter-apk/app-release.apk
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            "$APK" "$DEPLOY_USER@$DEPLOY_HOST:/var/www/limm/vpn/limm-hiddify_tmp.apk"
+
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "mv -f /var/www/limm/vpn/limm-hiddify_tmp.apk /var/www/limm/vpn/limm-hiddify.apk && \
+             chmod 644 /var/www/limm/vpn/limm-hiddify.apk && \
+             echo '{\"version\":\"${{ env.VERSION }}\",\"build\":\"${{ env.SHORT_SHA }}\"}' \
+               > /var/www/limm/vpn/hiddify-android-info.json && \
+             echo 'Deployed limm-hiddify.apk ${{ env.VERSION }}'"
+
+          echo "Deployed: https://www.limm.space/vpn/limm-hiddify.apk"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: limm-hiddify-android-${{ env.VERSION }}
+          path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 7
+
   build-windows:
     runs-on: windows-latest
     steps:
@@ -175,13 +267,10 @@ jobs:
           $releaseDir = "build\windows\x64\runner\Release"
           $pfx = "$env:RUNNER_TEMP\codesign.pfx"
           [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WIN_CERT_PFX_BASE64))
-          # Resolve signtool from the installed Windows SDK (newest x64).
           $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" |
             Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
           if (-not $signtool) { throw "signtool.exe not found" }
           Write-Host "signtool: $signtool"
-          # Sign every PE we ship (exe + dlls), incl. the Go hiddify-core.dll — unsigned Go
-          # binaries are the main Defender ML false-positive trigger.
           $targets = Get-ChildItem $releaseDir -Recurse -Include *.exe,*.dll
           foreach ($t in $targets) {
             & $signtool sign /fd SHA256 /f $pfx /p $env:WIN_CERT_PASSWORD `
