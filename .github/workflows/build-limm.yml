@@ -31,6 +31,7 @@ jobs:
         run: |
           BASE_VER=$(grep '^version:' pubspec.yaml | sed 's/version: *//; s/+.*//')
           VERSION="${BASE_VER}.${{ github.run_number }}"
+          echo "BASE_VER=$BASE_VER" >> $GITHUB_ENV
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
           echo "Building version $VERSION (${{ github.sha }})"
@@ -49,7 +50,7 @@ jobs:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
         run: |
           flutter build macos --release \
-            --build-name=${{ env.VERSION }} \
+            --build-name=${{ env.BASE_VER }} \
             --build-number=${{ github.run_number }} \
             --dart-define=LIMM_TOKEN=${{ secrets.LIMM_TOKEN }} \
             --dart-define=LIMM_BUILD_SHA=${{ env.SHORT_SHA }}
@@ -141,6 +142,7 @@ jobs:
         run: |
           BASE_VER=$(grep '^version:' pubspec.yaml | sed 's/version: *//; s/+.*//')
           VERSION="${BASE_VER}.${{ github.run_number }}"
+          echo "BASE_VER=$BASE_VER" >> $GITHUB_ENV
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
           echo "Building version $VERSION (${{ github.sha }})"
@@ -155,7 +157,7 @@ jobs:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
         run: |
           flutter build windows --release \
-            --build-name=${{ env.VERSION }} \
+            --build-name=${{ env.BASE_VER }} \
             --build-number=${{ github.run_number }} \
             --dart-define=LIMM_TOKEN=${{ secrets.LIMM_TOKEN }} \
             --dart-define=LIMM_BUILD_SHA=${{ env.SHORT_SHA }}

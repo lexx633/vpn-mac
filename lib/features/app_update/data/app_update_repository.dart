@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:fpdart/fpdart.dart';
 import 'package:hiddify/core/http_client/dio_http_client.dart';
 import 'package:hiddify/core/model/constants.dart';
@@ -29,7 +31,19 @@ class AppUpdateRepositoryImpl with ExceptionHandler, InfraLogger implements AppU
       if (!release.allowCustomUpdateChecker) {
         throw Exception("custom update checkers are not supported");
       }
-      final response = await httpClient.get<List>(Constants.githubReleasesApiUrl);
+      // limm: own release feed per platform (мы не публикуем GitHub-релизы — раздаём через
+      // limm.space). api.py отдаёт GitHub-/releases-формой список с 3-частным semver-тегом.
+      final platform = Platform.isWindows
+          ? 'win'
+          : Platform.isMacOS
+              ? 'mac'
+              : Platform.isAndroid
+                  ? 'apk'
+                  : null;
+      final url = platform != null
+          ? 'https://limm.space/api/app-release/$platform/releases'
+          : Constants.githubReleasesApiUrl;
+      final response = await httpClient.get<List>(url);
       if (response.statusCode != 200 || response.data == null) {
         loggy.warning("failed to fetch latest version info");
         return left(const AppUpdateFailure.unexpected());
