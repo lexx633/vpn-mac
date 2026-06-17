@@ -110,7 +110,7 @@ class AboutPage extends HookConsumerWidget {
               ListTile(
                 leading: const Icon(FluentIcons.phone_24_regular),
                 title: const Text("Hiddify для Android"),
-                subtitle: const Text("limm-vpn.apk · TUIC / XHTTP"),
+                subtitle: const Text("с поддержкой TUIC / XHTTP"),
                 trailing: const Icon(FluentIcons.arrow_download_24_regular),
                 onTap: () async {
                   await UriUtils.tryLaunch(Uri.parse(Constants.limmApkUrl));
