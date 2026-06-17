@@ -195,10 +195,9 @@ jobs:
         shell: pwsh
         run: |
           $releaseDir = "build\windows\x64\runner\Release"
-          # Drop HiddifyCli.exe: the GUI uses hiddify-core.dll in-process and never spawns the
-          # CLI. It's an unused standalone Go console binary, and Go console exes are a frequent
-          # trigger for Defender's generic ML heuristic (Sabsik!ml) on unsigned downloads.
-          Remove-Item "$releaseDir\HiddifyCli.exe" -Force -ErrorAction SilentlyContinue
+          # NB: HiddifyCli.exe is KEPT in the zip — it's needed by the CLI test harness
+          # (client/run-tun-realtest.ps1). Removing it earlier did NOT help the Defender
+          # false-positive (proven to be hash-reputation, not the CLI — see E-153).
           $zipName = "limm-vpn-win.zip"
           Compress-Archive -Path "$releaseDir\*" -DestinationPath $zipName
           echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
