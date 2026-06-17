@@ -203,6 +203,15 @@ jobs:
           echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
           Get-Item $zipName | Select-Object Name, @{N='SizeMB';E={[math]::Round($_.Length/1MB,1)}}
 
+      - name: Create enc-ZIP
+        shell: bash
+        run: |
+          # Password-protected zip — Defender skips encrypted archives on browser download.
+          # Users extract with password: limm
+          7z a -p"limm" -mx=5 limm-vpn-win-enc.zip build/windows/x64/runner/Release/*
+          ls -lh limm-vpn-win-enc.zip
+          echo "ENC_ZIP_NAME=limm-vpn-win-enc.zip" >> $GITHUB_ENV
+
       - name: Deploy to limm.space
         shell: bash
         env:
@@ -219,10 +228,16 @@ jobs:
             "$ZIP_NAME" \
             "$DEPLOY_USER@$DEPLOY_HOST:/var/www/limm/vpn/limm-vpn-win_tmp.zip"
 
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            "$ENC_ZIP_NAME" \
+            "$DEPLOY_USER@$DEPLOY_HOST:/var/www/limm/vpn/limm-vpn-win-enc_tmp.zip"
+
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             "$DEPLOY_USER@$DEPLOY_HOST" \
             "mv -f /var/www/limm/vpn/limm-vpn-win_tmp.zip /var/www/limm/vpn/limm-vpn-win.zip && \
              chmod 644 /var/www/limm/vpn/limm-vpn-win.zip && \
+             mv -f /var/www/limm/vpn/limm-vpn-win-enc_tmp.zip /var/www/limm/vpn/limm-vpn-win-enc.zip && \
+             chmod 644 /var/www/limm/vpn/limm-vpn-win-enc.zip && \
              echo '{\"version\":\"${{ env.VERSION }}\",\"build\":\"${{ env.SHORT_SHA }}\"}' \
                > /var/www/limm/vpn/win-info.json && chmod 644 /var/www/limm/vpn/win-info.json && \
              echo 'window.WIN_VER={\"ver\":\"${{ env.VERSION }}\",\"url\":\"/vpn/limm-vpn-win.zip\"};' \
@@ -230,6 +245,7 @@ jobs:
              echo 'Deployed ${{ env.VERSION }}'"
 
           echo "Deployed: https://limm.space/vpn/limm-vpn-win.zip"
+          echo "Deployed enc: https://limm.space/vpn/limm-vpn-win-enc.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
