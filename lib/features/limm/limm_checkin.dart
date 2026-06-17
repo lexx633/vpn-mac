@@ -43,16 +43,20 @@ class LimmCheckin {
     'https://limm.space/vpn/sub',
   ];
 
-  // §7.3 egress mirrors: own echo endpoint first, ipify only as last resort.
-  static const _myipURLs = [
-    'https://www.limm.space/api/myip',
-    'https://vpn.limm.space/api/myip',
+  // §7.3 egress: own /api/myip first, ipify fallback. Hit limm.space (CF) — NOT the www/vpn
+  // mirrors: the probe rides the tunnel (exit outside RU → CF reachable) and only CF returns
+  // the real exit-node IP (CF-Connecting-IP). www via :443 mux → 127.0.0.1, Bunny → edge IP.
+  static const _egressEndpoints = [
     'https://limm.space/api/myip',
+    'https://api.ipify.org',
   ];
 
   /// curl executable: on Windows it lives in System32 and is found via PATH;
   /// on macOS/Linux use the absolute path (sandboxed apps may have a minimal PATH).
   static String get _curl => Platform.isWindows ? 'curl' : '/usr/bin/curl';
+
+  /// Null device for curl -o (discard body).
+  static String get _devNull => Platform.isWindows ? 'NUL' : '/dev/null';
 
   /// App version string for checkin: "hiddify-{semver}+{sha}" — e.g. "hiddify-4.1.2.10+626a4d5".
   /// PackageInfo reads the version baked in by flutter build (--build-name / --build-number).
@@ -215,31 +219,25 @@ class LimmCheckin {
     String tgStatus = 'down', gglStatus = 'down', chgptStatus = 'down';
 
     if (vpnOn) {
-      // L2/L3: connect to VPN server through HTTP proxy
+      // L2 (§7.2): transport up — reach the VPN server through the tunnel, no internet egress yet.
       final l2body = await _curlProxy('https://$_serverIP:443',
           port: _proxyPort, timeout: 10);
       l2 = l2body != null ? 1 : 0;
-      l3 = l2;
 
-      // L4: egress IP through tunnel — §7.3 /api/myip first, ipify fallback;
-      // compare against all known node IPs from sub.
+      // L3 (§7.2/§7.4): egress IP obtained through the tunnel → traffic flows out.
+      // §7.3 /api/myip first, ipify fallback. Don't gate on an IP set — server decides the node.
       final ip = await _egressViaProxy(timeout: 15);
-      if (ip != null && ip.isNotEmpty) {
-        egressIp = ip.trim();
-        final serverIPs = await _knownServerIPs();
-        l4 = serverIPs.contains(egressIp) ? 1 : 0;
-      }
+      if (ip != null && ip.isNotEmpty) { egressIp = ip.trim(); l3 = 1; }
 
-      // Tunnel latency (gstatic generate_204 through proxy, 3 probes avg)
+      // L4 (§7.2): generate_204 through the tunnel → real browsing works; also yields tunnel latency.
       final tunSamples = <int>[];
       for (var i = 0; i < 3; i++) {
-        final tStart = DateTime.now();
-        final tOk = await _curlProxy('https://www.gstatic.com/generate_204',
-            port: _proxyPort, timeout: 5);
-        if (tOk != null) tunSamples.add(DateTime.now().difference(tStart).inMilliseconds);
+        final ms = await _probe204(port: _proxyPort, timeout: 5);
+        if (ms != null) tunSamples.add(ms);
       }
       if (tunSamples.isNotEmpty) {
         tunnelMs = tunSamples.reduce((a, b) => a + b) ~/ tunSamples.length;
+        l4 = 1;
       }
 
       // Services (parallel)
@@ -328,6 +326,10 @@ class LimmCheckin {
             tunnelMs != null ||
             tgStatus == 'ok' || gglStatus == 'ok' || chgptStatus == 'ok')
         ? 1 : 0;
+    // §7.2 boundary: L3 = egress/tunnel carries traffic out; L2 = transport up (handshake).
+    // If we got egress or a 204, the transport is definitely up too.
+    final l3 = (egressIp.isNotEmpty || tunnelMs != null) ? 1 : 0;
+    final l2 = (l3 == 1 || browserOk == 1) ? 1 : 0;
     final payload = <String, dynamic>{
       'client_uid':   uid,
       'kind':         _clientKind,
@@ -335,8 +337,8 @@ class LimmCheckin {
       'app_version':  await _appVersion(),
       'l0_local_net': l0,
       'l1_tcp443':    l1,
-      'l2_handshake': browserOk, // derived from tunnelMs/services/l4, not just l4
-      'l3_tunnel':    browserOk,
+      'l2_handshake': l2,
+      'l3_tunnel':    l3,
       'l4_dest':      l4,
       'browser_ok':   browserOk,
       'vpn_running':  1,    // VPN IS running (we verified socket before calling this)
@@ -496,21 +498,40 @@ class LimmCheckin {
     }
   }
 
-  /// Egress IP through the tunnel (§7.3): /api/myip mirrors first, ipify fallback.
-  /// Parses {"ip": "..."} JSON from our endpoint; ipify returns the raw IP.
+  /// Egress IP through the tunnel (§7.3): limm.space/api/myip (CF) first, ipify fallback.
+  /// Parses {"ip": "..."} from our endpoint; ipify returns the raw IP. Loopback/private
+  /// values are rejected (a mirror that didn't traverse CF would echo 127.0.0.1).
   Future<String?> _egressViaProxy({int timeout = 15}) async {
-    for (final url in _myipURLs) {
-      final body = await _curlProxy(url, port: _proxyPort, timeout: timeout);
+    for (final ep in _egressEndpoints) {
+      final isMyip = ep.contains('/api/myip');
+      final body = await _curlProxy(ep, port: _proxyPort, timeout: timeout);
       if (body != null) {
-        try {
-          final m = jsonDecode(body);
-          final ip = (m is Map) ? m['ip'] : null;
-          if (ip is String && ip.trim().isNotEmpty) return ip.trim();
-        } catch (_) {}
+        final ip = isMyip ? _parseMyip(body) : body.trim();
+        if (ip != null && _isUsableEgress(ip)) return ip;
       }
     }
-    final ip = await _curlProxy('https://api.ipify.org', port: _proxyPort, timeout: timeout);
-    return (ip != null && ip.trim().isNotEmpty) ? ip.trim() : null;
+    return null;
+  }
+
+  String? _parseMyip(String body) {
+    try {
+      final m = jsonDecode(body);
+      final ip = (m is Map) ? m['ip'] : null;
+      if (ip is String && ip.trim().isNotEmpty) return ip.trim();
+    } catch (_) {}
+    return null;
+  }
+
+  bool _isUsableEgress(String ip) {
+    if (ip.isEmpty) return false;
+    if (ip.startsWith('127.') || ip == '::1' || ip.startsWith('10.') ||
+        ip.startsWith('192.168.') || ip.startsWith('169.254.')) return false;
+    if (ip.startsWith('172.')) {
+      final parts = ip.split('.');
+      final o2 = parts.length > 1 ? int.tryParse(parts[1]) : null;
+      if (o2 != null && o2 >= 16 && o2 <= 31) return false;
+    }
+    return true;
   }
 
   /// HTTP request through Hiddify HTTP proxy.
@@ -527,6 +548,29 @@ class LimmCheckin {
       if (r.exitCode != 0) return null;
       final body = r.stdout.toString().trim();
       return body.isEmpty ? null : body;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// §7.2 L4 liveness: generate_204 through proxy. Returns elapsed ms on 204/200, else null.
+  /// Checks http_code, not body — generate_204 returns an empty body by design, so a
+  /// body-based probe would always misread it as a failure (and tunnel_ms would never set).
+  Future<int?> _probe204({required int port, int timeout = 5}) async {
+    try {
+      final t0 = DateTime.now();
+      final r = await Process.run(_curl, [
+        '--max-time',        '$timeout',
+        '--connect-timeout', '${(timeout - 2).clamp(2, timeout)}',
+        '-s', '-o', _devNull, '-w', '%{http_code}',
+        '--proxy', 'http://127.0.0.1:$port',
+        'https://www.gstatic.com/generate_204',
+      ]);
+      final code = int.tryParse(r.stdout.toString().trim()) ?? 0;
+      if (code == 204 || code == 200) {
+        return DateTime.now().difference(t0).inMilliseconds;
+      }
+      return null;
     } catch (_) {
       return null;
     }

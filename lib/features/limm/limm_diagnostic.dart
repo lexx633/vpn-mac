@@ -52,11 +52,13 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
   static const _serverIP   = '45.95.175.170';
   static const _serverPort = 443;     // VPN server port for L1 TCP probe
 
-  // §7.3 egress mirrors: our own echo endpoint first, ipify only as last resort.
-  static const _myipURLs = [
-    'https://www.limm.space/api/myip',
-    'https://vpn.limm.space/api/myip',
+  // §7.3 egress: our own /api/myip first, ipify fallback. Hit limm.space (CF) — NOT the
+  // www/vpn mirrors: the probe rides the tunnel (exit is outside RU → CF is reachable),
+  // and only CF returns the real exit-node IP (CF-Connecting-IP). Direct www via the :443
+  // stream-mux would return 127.0.0.1, vpn/Bunny an edge IP (see map-db.md / map-macos.md).
+  static const _egressEndpoints = [
     'https://limm.space/api/myip',
+    'https://api.ipify.org',
   ];
 
   /// curl executable: absolute path on macOS/Linux, via PATH on Windows.
@@ -234,16 +236,15 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
         ? l1samples.reduce((a, b) => a + b) ~/ l1samples.length
         : 0;
 
-    // Step 2: check VPN + measure tunnel latency (3 probes avg)
+    // Step 2: check VPN + measure tunnel latency via generate_204 (§7.2 L4), 3 probes avg
     final vpnOn = await LimmCheckin.shared.vpnAvailable();
     int? tunnelMs;
     int tunCount = 0;
     if (vpnOn) {
       final tunSamples = <int>[];
       for (var i = 0; i < 3; i++) {
-        final tStart = DateTime.now();
-        final tOk = await _curlProxy('https://www.gstatic.com/generate_204', timeout: 8);
-        if (tOk != null) tunSamples.add(DateTime.now().difference(tStart).inMilliseconds);
+        final ms = await _probe204(timeout: 8);
+        if (ms != null) tunSamples.add(ms);
       }
       tunCount = tunSamples.length;
       if (tunSamples.isNotEmpty) {
@@ -251,11 +252,11 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
       }
     }
 
-    // Step 3: POST checkin with real latency data
+    // Step 3: POST checkin with real latency data. l4 = generate_204 passed (§7.2 L4).
     int code; String msg;
     if (vpnOn) {
       (code, msg) = await LimmCheckin.shared.performPostTest(
-        l0: 1, l1: l1, l4: 0,    // l4 unknown without full egress probe
+        l0: 1, l1: l1, l4: tunnelMs != null ? 1 : 0,
         latencyMs: latencyMs > 0 ? latencyMs : null,
         tunnelMs: tunnelMs,
       );
@@ -296,23 +297,6 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
     }
   }
 
-  /// HTTP request through Hiddify HTTP proxy.
-  Future<String?> _curlProxy(String url, {int timeout = 15}) async {
-    try {
-      final r = await Process.run(_curl, [
-        '--max-time',        '$timeout',
-        '--connect-timeout', '${(timeout - 2).clamp(2, timeout)}',
-        '-s',
-        '--proxy', 'http://127.0.0.1:$_proxyPort',
-        url,
-      ]);
-      final out = r.stdout.toString().trim();
-      return out.isEmpty ? null : out;
-    } catch (_) {
-      return null;
-    }
-  }
-
   Future<(bool, String)> _sendLog() async {
     final (code, body) = await LimmCheckin.shared.sendLog();
     return (code == 200, '$code $body');
@@ -339,26 +323,50 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
   static const _ftSkipTags  = {'direct', 'block', 'dns-out', 'GLOBAL', 'REJECT'};
   static const _ftSkipTypes = {'selector', 'urltest', 'dns', 'block', 'direct'};
 
-  /// Egress IP through the active tunnel (§7.3): /api/myip mirrors first, ipify fallback.
+  /// Egress IP through the active tunnel (§7.3): limm.space/api/myip (CF) first, ipify fallback.
   /// Each call uses --no-keepalive so it rides the freshly-switched outbound.
   Future<String?> _egressViaProxy({required int timeout}) async {
-    for (final url in _myipURLs) {
-      final body = await _curlProxyNoKA(url, timeout: timeout);
+    for (final ep in _egressEndpoints) {
+      final isMyip = ep.contains('/api/myip');
+      final body = await _curlProxyNoKA(ep, timeout: timeout);
       if (body != null) {
-        try {
-          final m = jsonDecode(body);
-          final ip = (m is Map) ? m['ip'] : null;
-          if (ip is String && ip.trim().isNotEmpty) return ip.trim();
-        } catch (_) {}
+        final ip = isMyip ? _parseMyip(body) : body.trim();
+        if (ip != null && _isUsableEgress(ip)) return ip;
       }
     }
-    final ip = await _curlProxyNoKA('https://api.ipify.org', timeout: timeout);
-    return (ip != null && ip.trim().isNotEmpty) ? ip.trim() : null;
+    return null;
   }
 
-  /// §7.2 L4 liveness: generate_204 through the tunnel. True on 204/200.
-  Future<bool> _liveness204({required int timeout}) async {
+  /// Parse {"ip":"..."} from /api/myip.
+  String? _parseMyip(String body) {
     try {
+      final m = jsonDecode(body);
+      final ip = (m is Map) ? m['ip'] : null;
+      if (ip is String && ip.trim().isNotEmpty) return ip.trim();
+    } catch (_) {}
+    return null;
+  }
+
+  /// A real egress can't be loopback/private — if a mirror returned 127.0.0.1 / 10.* /
+  /// 192.168.* etc. it isn't the true exit IP, so treat it as no egress.
+  bool _isUsableEgress(String ip) {
+    if (ip.isEmpty) return false;
+    if (ip.startsWith('127.') || ip == '::1' || ip.startsWith('10.') ||
+        ip.startsWith('192.168.') || ip.startsWith('169.254.')) return false;
+    if (ip.startsWith('172.')) {
+      final parts = ip.split('.');
+      final o2 = parts.length > 1 ? int.tryParse(parts[1]) : null;
+      if (o2 != null && o2 >= 16 && o2 <= 31) return false;
+    }
+    return true;
+  }
+
+  /// §7.2 L4 liveness: generate_204 through the tunnel. Returns elapsed ms on 204/200,
+  /// null otherwise. Uses http_code (not body) — generate_204 has an empty body by design,
+  /// so a body-based check would always read it as a failure.
+  Future<int?> _probe204({required int timeout}) async {
+    try {
+      final t0 = DateTime.now();
       final r = await Process.run(_curl, [
         '--max-time',        '$timeout',
         '--connect-timeout', '${(timeout - 2).clamp(2, timeout)}',
@@ -368,9 +376,12 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
         'https://www.gstatic.com/generate_204',
       ]);
       final code = int.tryParse(r.stdout.toString().trim()) ?? 0;
-      return code == 204 || code == 200;
+      if (code == 204 || code == 200) {
+        return DateTime.now().difference(t0).inMilliseconds;
+      }
+      return null;
     } catch (_) {
-      return false;
+      return null;
     }
   }
 
@@ -436,7 +447,7 @@ class _LimmDiagnosticPageState extends ConsumerState<LimmDiagnosticPage> {
         // §7.4 verdict: any egress = tunnel carries traffic. Never compare with a single IP.
         final ok = egressIp != null;
         // §7.2 L4 liveness only on live profiles (dead ones never reach here).
-        final browserOk = ok && await _liveness204(timeout: timeout);
+        final browserOk = ok && (await _probe204(timeout: timeout)) != null;
         final known = ok && knownIPs.contains(egressIp);
 
         _append(ok
