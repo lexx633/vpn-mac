@@ -272,7 +272,10 @@ class ProfileRepositoryImpl with ExceptionHandler, InfraLogger implements Profil
                       .mapLeft(ProfileFailure.invalidConfig)
                       .flatMap(
                         (_) => TaskEither.tryCatch(
-                          () => LimmConfigPatcher.patchFile(path),
+                          () async {
+                            await LimmConfigPatcher.patchFile(path);
+                            return unit;
+                          },
                           ProfileFailure.unexpected,
                         ),
                       ),
