@@ -108,6 +108,16 @@ class AboutPage extends HookConsumerWidget {
               ...conditionalTiles,
               if (conditionalTiles.isNotEmpty) const Divider(),
               ListTile(
+                leading: const Icon(FluentIcons.phone_24_regular),
+                title: const Text("Android (TUIC / XHTTP)"),
+                subtitle: const Text("limm-vpn.apk"),
+                trailing: const Icon(FluentIcons.arrow_download_24_regular),
+                onTap: () async {
+                  await UriUtils.tryLaunch(Uri.parse(Constants.limmApkUrl));
+                },
+              ),
+              const Divider(),
+              ListTile(
                 title: Text(t.pages.about.sourceCode),
                 trailing: const Icon(FluentIcons.open_24_regular),
                 onTap: () async {

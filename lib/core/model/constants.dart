@@ -21,6 +21,7 @@ abstract class Constants {
   static const limmApiBase     = "https://limm.space/api";
   static const limmMonitorUrl  = "https://limm.space/api/applog";  // legacy
   static const limmFirstRunKey = "limm_subscription_added";
+  static const limmApkUrl      = "https://www.limm.space/vpn/limm-vpn.apk"; // Android (TUIC/XHTTP)
   static const cfWarpPrivacyPolicy = "https://www.cloudflare.com/application/privacypolicy/";
   static const cfWarpTermsOfService = "https://www.cloudflare.com/application/terms/";
 }
